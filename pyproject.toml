@@ -1,0 +1,14 @@
+[project]
+name = "payment-gateway"
+version = "0.1.0"
+description = "Payment gateway for merchants"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "asyncpg>=0.31.0",
+    "dishka>=1.10.1",
+    "fastapi[standard]>=0.136.1",
+    "pydantic-settings>=2.14.1",
+    "sqlalchemy[asyncio]>=2.0.49",
+]
