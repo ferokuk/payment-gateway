@@ -1,24 +1,25 @@
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from src.contexts.core_payment.domain.payment import PaymentStatus
+from pydantic import BaseModel, Field
+
+from src.contexts.core_payment.domain.payment import PaymentStatuses
 
 
-@dataclass(frozen=True, slots=True)
-class CreatePaymentCommand:
-    amount: Decimal
-    currency: str
-    provider_id: int
-    metadata: dict[str, Any] | None
+class CreatePaymentInputDTO(BaseModel):
+    amount: Decimal = Field(gt=0, decimal_places=2, description="Сумма платежа")
+    currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$", description="ISO 4217")
+    provider_id: int = Field(gt=0, description="ID платёжного провайдера")
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Произвольные данные мерчанта"
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class CreatePaymentResult:
-    payment_id: UUID
-    status: PaymentStatus
-    amount: Decimal
-    currency: str
-    created_at: datetime
+class CreatePaymentOutputDTO(BaseModel):
+    payment_id: UUID = Field(description="ID созданного платежа")
+    status: PaymentStatuses = Field(description="Текущий статус платежа")
+    amount: Decimal = Field(description="Сумма платежа")
+    currency: str = Field(description="ISO 4217")
+    created_at: datetime = Field(description="Момент создания в UTC")

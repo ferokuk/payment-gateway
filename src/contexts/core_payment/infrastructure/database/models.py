@@ -1,27 +1,30 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID as PY_UUID
 from uuid import uuid4
 
-from sqlalchemy import Column, Numeric, String, Enum as SQLEnum, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import DateTime, Numeric, String, func
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.contexts.core_payment.domain.payment import PaymentStatus
+from src.contexts.core_payment.domain.payment import PaymentStatuses
 from src.shared.database.database import Base
 
 
 class PaymentModel(Base):
-    __tablename__ = 'payments'
-    id: Mapped[UUID] = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    amount: Mapped[Decimal] = Column(Numeric(20, 2), nullable=False)
+    __tablename__ = "payments"
+    id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
     provider_id: Mapped[int] = mapped_column(nullable=False)
-    currency: Mapped[str] = Column(String(3), nullable=False)
-    status: Mapped[PaymentStatus] = mapped_column(
-        SQLEnum(PaymentStatus, nullable=False, name='payment_status'),
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    status: Mapped[PaymentStatuses] = mapped_column(
+        SQLEnum(PaymentStatuses, nullable=False, name="payment_status"),
         nullable=False,
     )
-    created_at: Mapped[datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    meta: Mapped[dict[str, Any] | None] = mapped_column(
-        "metadata", JSONB, nullable=True
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    meta: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)

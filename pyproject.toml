@@ -34,3 +34,8 @@ line-length = 100
   strict = true
   plugins = ["pydantic.mypy"]
   exclude = ["alembic/versions/"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+]
