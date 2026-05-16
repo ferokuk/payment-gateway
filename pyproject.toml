@@ -12,3 +12,25 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "sqlalchemy[asyncio]>=2.0.49",
 ]
+
+[tool.ruff]
+line-length = 100
+  target-version = "py313"
+  src = ["src", "tests"]
+
+  [tool.ruff.lint]
+  select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
+  ignore = ["S101"]  # assert в тестах ок
+
+  [tool.ruff.lint.per-file-ignores]
+  "tests/**" = ["S"]
+  "alembic/**" = ["E501"]
+
+  [tool.ruff.format]
+  quote-style = "double"
+
+  [tool.mypy]
+  python_version = "3.13"
+  strict = true
+  plugins = ["pydantic.mypy"]
+  exclude = ["alembic/versions/"]
