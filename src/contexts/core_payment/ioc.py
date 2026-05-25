@@ -1,6 +1,6 @@
 from dishka import Provider, Scope, provide
 
-from src.contexts.core_payment.application.ports.payment_repository import PaymentRepository
+from src.contexts.core_payment.application.ports.repositories import PaymentRepository
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
 
 

@@ -5,7 +5,7 @@ from src.contexts.core_payment.application.dto.payment import (
     CreatePaymentInputDTO,
     CreatePaymentOutputDTO,
 )
-from src.contexts.core_payment.application.ports.payment_repository import PaymentRepository
+from src.contexts.core_payment.application.ports.repositories import PaymentRepository
 from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
 
 
