@@ -5,15 +5,16 @@ from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, HTTPException, status
 from src.contexts.core_payment.application.dto.payment import CreatePaymentInputDTO
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
+from src.contexts.core_payment.application.use_cases.get_payment_status import (
+    GetPaymentStatusUseCase,
+)
+from src.contexts.core_payment.domain.exceptions import PaymentNotFoundError
 from src.contexts.core_payment.presentation.schemas.payment import (
     CreatePaymentRequest,
     PaymentResponse,
     PaymentStatusResponse,
 )
 from src.shared.security import Authenticated
-
-from src.contexts.core_payment.application.use_cases.get_payment_status import GetPaymentStatusUseCase
-from src.contexts.core_payment.domain.exceptions import PaymentNotFoundError
 
 router = APIRouter(prefix="/payment", tags=["payments"])
 

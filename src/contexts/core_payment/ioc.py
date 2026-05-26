@@ -1,8 +1,10 @@
 from dishka import Provider, Scope, provide
 
-from src.contexts.core_payment.application.use_cases.get_payment_status import GetPaymentStatusUseCase
 from src.contexts.core_payment.application.ports.repositories import PaymentRepository
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
+from src.contexts.core_payment.application.use_cases.get_payment_status import (
+    GetPaymentStatusUseCase,
+)
 
 
 class CorePaymentProvider(Provider):
