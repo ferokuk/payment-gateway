@@ -24,3 +24,10 @@ class PaymentResponse(BaseModel):
     amount: Decimal = Field(description="Сумма платежа")
     currency: str = Field(description="ISO 4217")
     created_at: datetime = Field(description="Момент создания в UTC")
+
+
+class PaymentStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    payment_id: UUID = Field(description="ID платежа")
+    status: PaymentStatuses = Field(description="Текущий статус платежа")

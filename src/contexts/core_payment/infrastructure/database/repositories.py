@@ -37,7 +37,7 @@ class SQLAlchemyPaymentRepository:
             provider_id=payment.provider_id,
             amount=payment.amount,
             currency=payment.currency,
-            metadata=payment.metadata,
+            metadata=payment.meta,
             status=payment.status,
             created_at=payment.created_at,
         )

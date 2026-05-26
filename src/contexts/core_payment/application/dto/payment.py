@@ -23,3 +23,8 @@ class CreatePaymentOutputDTO(BaseModel):
     amount: Decimal = Field(description="Сумма платежа")
     currency: str = Field(description="ISO 4217")
     created_at: datetime = Field(description="Момент создания в UTC")
+
+
+class GetPaymentStatusOutputDTO(BaseModel):
+    payment_id: UUID = Field(description="ID созданного платежа")
+    status: PaymentStatuses = Field(description="Текущий статус платежа")
