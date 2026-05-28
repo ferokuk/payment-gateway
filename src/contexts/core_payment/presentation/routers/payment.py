@@ -16,7 +16,7 @@ from src.contexts.core_payment.presentation.schemas.payment import (
 )
 from src.shared.security import Authenticated
 
-router = APIRouter(prefix="/payment", tags=["payments"])
+router = APIRouter(prefix="/payments", tags=["payments"])
 
 
 @router.post(
@@ -49,7 +49,7 @@ async def create_payment(
     "/{payment_id}",
     response_model=PaymentStatusResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get a payment",
+    summary="Get payment status",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": "Not found"},

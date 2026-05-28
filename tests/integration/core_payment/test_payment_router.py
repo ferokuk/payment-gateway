@@ -93,7 +93,7 @@ async def test_get_payment_returns_200_with_status_when_payment_exists(
     await fake_repo.add(payment)
 
     response = await client.get(
-        f"/payment/{payment.id}",
+        f"/payments/{payment.id}",
         headers={"X-API-Key": API_KEY},
     )
 
@@ -106,7 +106,7 @@ async def test_get_payment_returns_200_with_status_when_payment_exists(
 @pytest.mark.anyio
 async def test_get_payment_returns_404_when_payment_missing(client: AsyncClient) -> None:
     response = await client.get(
-        f"/payment/{uuid4()}",
+        f"/payments/{uuid4()}",
         headers={"X-API-Key": API_KEY},
     )
 
@@ -124,7 +124,7 @@ async def test_get_payment_returns_401_without_api_key(client: AsyncClient) -> N
 @pytest.mark.anyio
 async def test_get_payment_returns_401_with_wrong_api_key(client: AsyncClient) -> None:
     response = await client.get(
-        f"/payment/{uuid4()}",
+        f"/payments/{uuid4()}",
         headers={"X-API-Key": "wrong-key"},
     )
 
@@ -145,7 +145,7 @@ async def test_create_payment_returns_201_and_persists_payment(
     client: AsyncClient, fake_repo: FakePaymentRepository
 ) -> None:
     response = await client.post(
-        "/payment",
+        "/payments",
         json=_valid_create_payload(),
         headers={"X-API-Key": API_KEY},
     )
@@ -170,7 +170,7 @@ async def test_create_payment_accepts_payload_without_metadata(client: AsyncClie
     del payload["metadata"]
 
     response = await client.post(
-        "/payment",
+        "/payments",
         json=payload,
         headers={"X-API-Key": API_KEY},
     )
@@ -180,7 +180,7 @@ async def test_create_payment_accepts_payload_without_metadata(client: AsyncClie
 
 @pytest.mark.anyio
 async def test_create_payment_returns_401_without_api_key(client: AsyncClient) -> None:
-    response = await client.post("/payment", json=_valid_create_payload())
+    response = await client.post("/payments", json=_valid_create_payload())
 
     assert response.status_code == 401
 
@@ -205,7 +205,7 @@ async def test_create_payment_returns_422_on_invalid_field(
     payload[field] = value
 
     response = await client.post(
-        "/payment",
+        "/payments",
         json=payload,
         headers={"X-API-Key": API_KEY},
     )
