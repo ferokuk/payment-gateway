@@ -64,5 +64,7 @@ async def get_payment(
     try:
         payment = await use_case(payment_id=payment_id)
     except PaymentNotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from e
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found"
+        ) from e
     return PaymentStatusResponse.model_validate(payment)

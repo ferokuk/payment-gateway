@@ -3,7 +3,6 @@ from collections.abc import AsyncIterator
 from dishka import Provider, Scope, provide
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from src.contexts.core_payment.application.ports.repositories import PaymentRepository
 from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyPaymentRepository,
 )
@@ -42,5 +41,5 @@ class RepositoriesProvider(Provider):
     scope = Scope.REQUEST
 
     @provide
-    def get_payment_repository(self, session: AsyncSession) -> PaymentRepository:
+    def get_payment_repository(self, session: AsyncSession) -> SQLAlchemyPaymentRepository:
         return SQLAlchemyPaymentRepository(session)
