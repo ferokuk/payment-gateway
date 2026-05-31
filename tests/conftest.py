@@ -5,6 +5,8 @@ os.environ.setdefault("API_KEY", "test-api-key")
 
 import pytest
 
+pytest_plugins = ["tests.fixtures.payment", "tests.fixtures.client"]
+
 
 @pytest.fixture
 def anyio_backend() -> str:

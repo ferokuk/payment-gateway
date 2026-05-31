@@ -1,95 +1,18 @@
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime
-from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
-from dishka import Provider, Scope, make_async_container, provide
-from dishka.integrations.fastapi import FastapiProvider, setup_dishka
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
-from src.contexts.core_payment.infrastructure.database.repositories import (
-    SQLAlchemyPaymentRepository,
-)
-from src.contexts.core_payment.ioc import CorePaymentProvider
-from src.contexts.core_payment.presentation.routers.payment import router as payment_router
-from src.shared.config import Settings
-from src.shared.security import AuthProvider
-
-API_KEY = "test-api-key"
-
-
-class FakePaymentRepository:
-    def __init__(self) -> None:
-        self._payments: dict[UUID, Payment] = {}
-
-    async def add(self, payment: Payment) -> None:
-        self._payments[payment.id] = payment
-
-    async def get_by_id(self, payment_id: UUID) -> Payment | None:
-        return self._payments.get(payment_id)
-
-
-class FakeConfigProvider(Provider):
-    scope = Scope.APP
-
-    @provide
-    def get_settings(self) -> Settings:
-        return Settings(database_url="sqlite+aiosqlite:///:memory:", api_key=API_KEY)
-
-
-class FakeRepositoriesProvider(Provider):
-    scope = Scope.REQUEST
-
-    def __init__(self, repo: FakePaymentRepository) -> None:
-        super().__init__()
-        self._repo = repo
-
-    @provide
-    def get_payment_repository(self) -> SQLAlchemyPaymentRepository:
-        return self._repo  # type: ignore[return-value]
-
-
-@pytest.fixture
-def fake_repo() -> FakePaymentRepository:
-    return FakePaymentRepository()
-
-
-@pytest.fixture
-async def client(fake_repo: FakePaymentRepository) -> AsyncIterator[AsyncClient]:
-    app = FastAPI()
-    app.include_router(payment_router)
-    container = make_async_container(
-        FakeConfigProvider(),
-        AuthProvider(),
-        FakeRepositoriesProvider(fake_repo),
-        CorePaymentProvider(),
-        FastapiProvider(),
-    )
-    setup_dishka(container, app)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    await container.close()
-
-
-def _make_payment(status: PaymentStatuses = PaymentStatuses.PENDING) -> Payment:
-    return Payment(
-        id=uuid4(),
-        provider_id=1,
-        status=status,
-        amount=Decimal("100.00"),
-        currency="USD",
-        created_at=datetime.now(UTC),
-    )
+from httpx import AsyncClient
+from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.shared.ids import new_uuid
+from tests.fixtures.client import API_KEY
+from tests.fixtures.payment import FakePaymentRepository, make_payment
 
 
 @pytest.mark.anyio
 async def test_get_payment_returns_200_with_status_when_payment_exists(
     client: AsyncClient, fake_repo: FakePaymentRepository
 ) -> None:
-    payment = _make_payment(status=PaymentStatuses.PROCESSING)
+    payment = make_payment(status=PaymentStatuses.PROCESSING)
     await fake_repo.add(payment)
 
     response = await client.get(
@@ -106,7 +29,7 @@ async def test_get_payment_returns_200_with_status_when_payment_exists(
 @pytest.mark.anyio
 async def test_get_payment_returns_404_when_payment_missing(client: AsyncClient) -> None:
     response = await client.get(
-        f"/payments/{uuid4()}",
+        f"/payments/{new_uuid()}",
         headers={"X-API-Key": API_KEY},
     )
 
@@ -116,7 +39,7 @@ async def test_get_payment_returns_404_when_payment_missing(client: AsyncClient)
 
 @pytest.mark.anyio
 async def test_get_payment_returns_401_without_api_key(client: AsyncClient) -> None:
-    response = await client.get(f"/payment/{uuid4()}")
+    response = await client.get(f"/payments/{new_uuid()}")
 
     assert response.status_code == 401
 
@@ -124,7 +47,7 @@ async def test_get_payment_returns_401_without_api_key(client: AsyncClient) -> N
 @pytest.mark.anyio
 async def test_get_payment_returns_401_with_wrong_api_key(client: AsyncClient) -> None:
     response = await client.get(
-        f"/payments/{uuid4()}",
+        f"/payments/{new_uuid()}",
         headers={"X-API-Key": "wrong-key"},
     )
 

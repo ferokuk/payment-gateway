@@ -2,9 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
-from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 
 from src.contexts.core_payment.domain.exceptions import InvalidPaymentStatusTransitionError
 
@@ -26,7 +25,7 @@ class FailureReasons(StrEnum):
 
 
 class Payment(BaseModel):
-    id: UUID = Field(description="ID созданного платежа")
+    id: UUID7 = Field(description="ID созданного платежа")
     provider_id: int = Field(gt=0, description="ID провайдера")
     status: PaymentStatuses = Field(description="Текущий статус платежа")
     amount: Decimal = Field(description="Сумма платежа")
