@@ -1,22 +1,11 @@
 from datetime import UTC
 from decimal import Decimal
-from uuid import UUID
 
 import pytest
 from src.contexts.core_payment.application.dto.payment import CreatePaymentInputDTO
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
-from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
-
-
-class FakePaymentRepository:
-    def __init__(self) -> None:
-        self._payments: dict[UUID, Payment] = {}
-
-    async def add(self, payment: Payment) -> None:
-        self._payments[payment.id] = payment
-
-    async def get_by_id(self, payment_id: UUID) -> Payment | None:
-        return self._payments.get(payment_id)
+from src.contexts.core_payment.domain.payment import PaymentStatuses
+from tests.fixtures.payment import FakePaymentRepository
 
 
 def _make_command(

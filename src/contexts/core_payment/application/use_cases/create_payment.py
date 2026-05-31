@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from src.contexts.core_payment.application.dto.payment import (
     CreatePaymentInputDTO,
@@ -9,6 +8,7 @@ from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
 from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyPaymentRepository,
 )
+from src.shared.ids import new_uuid
 
 
 class CreatePaymentUseCase:
@@ -17,7 +17,7 @@ class CreatePaymentUseCase:
 
     async def __call__(self, command: CreatePaymentInputDTO) -> CreatePaymentOutputDTO:
         payment = Payment(
-            id=uuid4(),
+            id=new_uuid(),
             amount=command.amount,
             currency=command.currency,
             status=PaymentStatuses.CREATED,

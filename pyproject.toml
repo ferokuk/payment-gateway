@@ -11,6 +11,8 @@ dependencies = [
     "fastapi[standard]>=0.136.1",
     "pydantic-settings>=2.14.1",
     "sqlalchemy[asyncio]>=2.0.49",
+    "structlog>=25.5.0",
+    "uuid-utils>=0.16.0",
 ]
 
 [tool.ruff]
@@ -34,6 +36,8 @@ python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
+explicit_package_bases = true
+mypy_path = "."
 
 [dependency-groups]
 dev = [

@@ -1,13 +1,13 @@
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
 
 from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
+from src.shared.ids import new_uuid
 
 
 def test_payment_is_created_with_given_fields() -> None:
     payment = Payment(
-        id=uuid4(),
+        id=new_uuid(),
         provider_id=1,
         status=PaymentStatuses.CREATED,
         amount=Decimal("100.00"),

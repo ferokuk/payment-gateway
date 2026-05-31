@@ -1,9 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 
 from src.contexts.core_payment.domain.payment import PaymentStatuses
 
@@ -18,7 +17,7 @@ class CreatePaymentInputDTO(BaseModel):
 
 
 class CreatePaymentOutputDTO(BaseModel):
-    payment_id: UUID = Field(description="ID созданного платежа")
+    payment_id: UUID7 = Field(description="ID созданного платежа")
     status: PaymentStatuses = Field(description="Текущий статус платежа")
     amount: Decimal = Field(description="Сумма платежа")
     currency: str = Field(description="ISO 4217")
@@ -26,5 +25,5 @@ class CreatePaymentOutputDTO(BaseModel):
 
 
 class GetPaymentStatusOutputDTO(BaseModel):
-    payment_id: UUID = Field(description="ID созданного платежа")
+    payment_id: UUID7 = Field(description="ID созданного платежа")
     status: PaymentStatuses = Field(description="Текущий статус платежа")
