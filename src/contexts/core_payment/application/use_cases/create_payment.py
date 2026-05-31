@@ -1,26 +1,28 @@
-from datetime import datetime
-from uuid import uuid4
+from datetime import UTC, datetime
 
 from src.contexts.core_payment.application.dto.payment import (
     CreatePaymentInputDTO,
     CreatePaymentOutputDTO,
 )
-from src.contexts.core_payment.application.ports.repositories import PaymentRepository
 from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
+from src.contexts.core_payment.infrastructure.database.repositories import (
+    SQLAlchemyPaymentRepository,
+)
+from src.shared.ids import new_uuid
 
 
 class CreatePaymentUseCase:
-    def __init__(self, payment_repository: PaymentRepository) -> None:
+    def __init__(self, payment_repository: SQLAlchemyPaymentRepository) -> None:
         self._payment_repository = payment_repository
 
     async def __call__(self, command: CreatePaymentInputDTO) -> CreatePaymentOutputDTO:
         payment = Payment(
-            id=uuid4(),
+            id=new_uuid(),
             amount=command.amount,
             currency=command.currency,
             status=PaymentStatuses.CREATED,
             provider_id=command.provider_id,
-            created_at=datetime.now(),
+            created_at=datetime.now(UTC),
             metadata=command.metadata,
         )
         await self._payment_repository.add(payment)
