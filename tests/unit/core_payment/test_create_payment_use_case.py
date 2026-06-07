@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from src.contexts.core_payment.application.dto.payment import CreatePaymentInputDTO
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
-from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from tests.fixtures.payment import FakePaymentRepository
 
 

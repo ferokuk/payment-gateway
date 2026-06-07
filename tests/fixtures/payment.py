@@ -3,7 +3,9 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
+from src.contexts.core_payment.domain.exceptions import PaymentNotFoundError
+from src.contexts.core_payment.domain.payment import Payment
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.shared.ids import new_uuid
 
 
@@ -12,10 +14,18 @@ class FakePaymentRepository:
         self._payments: dict[UUID, Payment] = {}
 
     async def add(self, payment: Payment) -> None:
-        self._payments[payment.id] = payment
+        # Копируем, чтобы хранилище было честной границей: мутации объекта
+        # снаружи не должны просачиваться в "БД" без вызова update.
+        self._payments[payment.id] = payment.model_copy(deep=True)
 
     async def get_by_id(self, payment_id: UUID) -> Payment | None:
-        return self._payments.get(payment_id)
+        stored = self._payments.get(payment_id)
+        return stored.model_copy(deep=True) if stored else None
+
+    async def update(self, payment: Payment) -> None:
+        if payment.id not in self._payments:
+            raise PaymentNotFoundError
+        self._payments[payment.id] = payment.model_copy(deep=True)
 
 
 def make_payment(status: PaymentStatuses = PaymentStatuses.PENDING) -> Payment:

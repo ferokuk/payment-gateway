@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.contexts.core_payment.domain.exceptions import PaymentNotFoundError
 from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.infrastructure.database.models import PaymentModel
 
@@ -18,6 +19,14 @@ class SQLAlchemyPaymentRepository:
         model = await self._session.get(PaymentModel, payment_id)
         return self._to_domain(model) if model else None
 
+    async def update(self, payment: Payment) -> None:
+        model = await self._session.get(PaymentModel, payment.id)
+        if model is None:
+            raise PaymentNotFoundError
+        model.status = payment.status
+        model.failure_reason = payment.failure_reason
+        model.error_message = payment.error_message
+
     @staticmethod
     def _to_model(payment: Payment) -> PaymentModel:
         return PaymentModel(
@@ -28,6 +37,8 @@ class SQLAlchemyPaymentRepository:
             meta=payment.metadata,
             status=payment.status,
             created_at=payment.created_at,
+            failure_reason=payment.failure_reason,
+            error_message=payment.error_message,
         )
 
     @staticmethod
@@ -40,4 +51,6 @@ class SQLAlchemyPaymentRepository:
             metadata=payment.meta,
             status=payment.status,
             created_at=payment.created_at,
+            failure_reason=payment.failure_reason,
+            error_message=payment.error_message,
         )

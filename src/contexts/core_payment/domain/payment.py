@@ -1,27 +1,14 @@
 from datetime import datetime
 from decimal import Decimal
-from enum import StrEnum
 from typing import Any
 
 from pydantic import UUID7, BaseModel, Field
 
-from src.contexts.core_payment.domain.exceptions import InvalidPaymentStatusTransitionError
-
-
-class PaymentStatuses(StrEnum):
-    CREATED = "created"
-    PENDING = "pending"
-    PROCESSING = "processing"
-    SUCCESS = "success"
-    ERROR = "error"
-    FAILED = "failed"
-
-
-class FailureReasons(StrEnum):
-    TIMEOUT = "timeout"
-    INSUFFICIENT_FUNDS = "insufficient_funds"
-    FRAUD = "fraud"
-    LIMIT_EXCEEDED = "limit_exceeded"
+from src.contexts.core_payment.domain.exceptions import (
+    InvalidPaymentFailureReasonError,
+    InvalidPaymentStatusTransitionError,
+)
+from src.contexts.core_payment.domain.statuses import FailureReasons, PaymentStatuses
 
 
 class Payment(BaseModel):
@@ -51,19 +38,23 @@ class Payment(BaseModel):
             )
         self.status = PaymentStatuses.PROCESSING
 
-    def mark_failed(self) -> None:
+    def mark_failed(self, reason: FailureReasons) -> None:
         if PaymentStatuses.FAILED not in _ALLOWED_TRANSITIONS[self.status]:
             raise InvalidPaymentStatusTransitionError(
                 from_status=self.status, to_status=PaymentStatuses.FAILED
             )
+        if reason not in _ALLOWED_FAILURE_REASONS[self.status]:
+            raise InvalidPaymentFailureReasonError(reason=reason, status=self.status)
         self.status = PaymentStatuses.FAILED
+        self.failure_reason = reason
 
-    def mark_error(self) -> None:
+    def mark_error(self, error_message: str) -> None:
         if PaymentStatuses.ERROR not in _ALLOWED_TRANSITIONS[self.status]:
             raise InvalidPaymentStatusTransitionError(
                 from_status=self.status, to_status=PaymentStatuses.ERROR
             )
         self.status = PaymentStatuses.ERROR
+        self.error_message = error_message
 
     def mark_success(self) -> None:
         if PaymentStatuses.SUCCESS not in _ALLOWED_TRANSITIONS[self.status]:
@@ -82,4 +73,11 @@ _ALLOWED_TRANSITIONS: dict[PaymentStatuses, frozenset[PaymentStatuses]] = {
     PaymentStatuses.SUCCESS: frozenset(),
     PaymentStatuses.ERROR: frozenset(),
     PaymentStatuses.FAILED: frozenset(),
+}
+
+_ALLOWED_FAILURE_REASONS: dict[PaymentStatuses, frozenset[FailureReasons]] = {
+    PaymentStatuses.PENDING: frozenset({FailureReasons.TIMEOUT}),
+    PaymentStatuses.PROCESSING: frozenset(
+        {FailureReasons.INSUFFICIENT_FUNDS, FailureReasons.FRAUD, FailureReasons.LIMIT_EXCEEDED}
+    ),
 }

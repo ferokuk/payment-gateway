@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import FailureReasons, PaymentStatuses
 from src.shared.database.database import Base
 from src.shared.ids import new_uuid
 
@@ -28,3 +28,7 @@ class PaymentModel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     meta: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
+    failure_reason: Mapped[FailureReasons | None] = mapped_column(
+        SQLEnum(FailureReasons, nullable=True), default=None, nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(default=None, nullable=True)

@@ -2,7 +2,7 @@ from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
-from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.shared.ids import new_uuid
 from tests.fixtures.client import API_KEY
 from tests.fixtures.payment import FakePaymentRepository, make_payment

@@ -4,7 +4,8 @@ from src.contexts.core_payment.application.dto.payment import (
     CreatePaymentInputDTO,
     CreatePaymentOutputDTO,
 )
-from src.contexts.core_payment.domain.payment import Payment, PaymentStatuses
+from src.contexts.core_payment.domain.payment import Payment
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyPaymentRepository,
 )

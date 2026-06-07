@@ -4,7 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 
 
 class CreatePaymentRequest(BaseModel):
