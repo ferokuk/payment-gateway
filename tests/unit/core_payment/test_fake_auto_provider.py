@@ -52,7 +52,9 @@ async def _initiate_and_wait(provider: AutoCallbackFakePaymentProvider, payment:
     await provider.initiate_payment(payment)
     tasks = set(provider._tasks)
     if tasks:
-        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        # The timeout is only a hang guard (delay_seconds=0, MockTransport):
+        # generous on purpose, so a loaded CI runner does not turn it into flake.
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
 
 
 def _sent_bodies(recorded: list[httpx.Request]) -> list[dict[str, Any]]:
