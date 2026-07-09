@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID as PY_UUID
 
-from sqlalchemy import DateTime, Numeric, String, func
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -32,3 +32,18 @@ class PaymentModel(Base):
         SQLEnum(FailureReasons, nullable=True), default=None, nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(default=None, nullable=True)
+
+
+class IdempotencyKeyModel(Base):
+    __tablename__ = "idempotency_keys"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payment_id: Mapped[PY_UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("payments.id"), nullable=False
+    )
+    # NULL <=> initiation not confirmed (the payment is stuck in CREATED).
+    response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -31,7 +31,7 @@ def test_payment_is_created_with_given_fields() -> None:
     assert payment.metadata is None
 
 
-# --- Переходы статусов (happy path) ---
+# --- Status transitions (happy path) ---
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ def test_valid_transition_changes_status(
     assert payment.status is expected
 
 
-# --- Переходы статусов (запрещённые) ---
+# --- Status transitions (forbidden) ---
 
 
 @pytest.mark.parametrize(
@@ -89,7 +89,7 @@ def test_invalid_transition_error_carries_context() -> None:
     assert exc_info.value.to_status is PaymentStatuses.SUCCESS
 
 
-# --- mark_failed: разрешённые пары (статус, причина) ---
+# --- mark_failed: allowed (status, reason) pairs ---
 
 
 @pytest.mark.parametrize(
@@ -112,7 +112,7 @@ def test_mark_failed_sets_status_and_reason(
     assert payment.failure_reason is reason
 
 
-# --- mark_failed: переход разрешён, но причина не подходит источнику ---
+# --- mark_failed: transition allowed, but the reason does not fit the source status ---
 
 
 @pytest.mark.parametrize(
@@ -146,7 +146,7 @@ def test_invalid_failure_reason_error_carries_context() -> None:
     assert exc_info.value.reason is FailureReasons.FRAUD
 
 
-# --- mark_failed: из нефейлящихся статусов сначала падает проверка перехода ---
+# --- mark_failed: from non-failable statuses the transition check fails first ---
 
 
 @pytest.mark.parametrize(
@@ -196,7 +196,7 @@ def test_mark_error_from_invalid_state_raises(initial: PaymentStatuses) -> None:
         payment.mark_error("boom")
 
 
-# --- Инвариант: причины описаны для всех failable-статусов ---
+# --- Invariant: reasons are defined for all failable statuses ---
 
 
 def test_failure_reason_map_matches_failable_states() -> None:
@@ -206,7 +206,7 @@ def test_failure_reason_map_matches_failable_states() -> None:
         if PaymentStatuses.FAILED in targets
     }
 
-    # Каждый статус, из которого можно уйти в FAILED, обязан иметь набор причин,
-    # иначе mark_failed поднимет KeyError при обращении к _ALLOWED_FAILURE_REASONS.
+    # Every status that can transition to FAILED must have a set of reasons,
+    # otherwise mark_failed raises KeyError when accessing _ALLOWED_FAILURE_REASONS.
     assert set(_ALLOWED_FAILURE_REASONS) == failable
     assert all(reasons for reasons in _ALLOWED_FAILURE_REASONS.values())

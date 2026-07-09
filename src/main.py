@@ -8,7 +8,10 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.contexts.core_payment.ioc import CorePaymentProvider
+from src.contexts.core_payment.ioc import CorePaymentProvider, PaymentProviderProvider
+from src.contexts.core_payment.presentation.routers.callbacks import (
+    router as callbacks_router,
+)
 from src.contexts.core_payment.presentation.routers.payment import router as payment_router
 from src.shared.config import settings
 from src.shared.ioc import ConfigProvider, DatabaseProvider, RepositoriesProvider
@@ -27,11 +30,13 @@ configure_logging(json_logs=not settings.is_debug)
 app = FastAPI(title="Payment Gateway", lifespan=lifespan)
 
 app.include_router(payment_router)
+app.include_router(callbacks_router)
 
 container = make_async_container(
     ConfigProvider(),
     DatabaseProvider(),
     CorePaymentProvider(),
+    PaymentProviderProvider(),
     AuthProvider(),
     FastapiProvider(),
     RepositoriesProvider(),

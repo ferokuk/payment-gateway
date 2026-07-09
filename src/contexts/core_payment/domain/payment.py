@@ -12,17 +12,15 @@ from src.contexts.core_payment.domain.statuses import FailureReasons, PaymentSta
 
 
 class Payment(BaseModel):
-    id: UUID7 = Field(description="ID созданного платежа")
-    provider_id: int = Field(gt=0, description="ID провайдера")
-    status: PaymentStatuses = Field(description="Текущий статус платежа")
-    amount: Decimal = Field(description="Сумма платежа")
+    id: UUID7 = Field(description="ID of the created payment")
+    provider_id: int = Field(gt=0, description="Provider ID")
+    status: PaymentStatuses = Field(description="Current payment status")
+    amount: Decimal = Field(description="Payment amount")
     currency: str = Field(description="ISO 4217")
-    created_at: datetime = Field(description="Момент создания в UTC")
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Произвольные данные мерчанта"
-    )
-    failure_reason: FailureReasons | None = Field(default=None, description="Причина ошибки")
-    error_message: str | None = Field(default=None, description="Текст ошибки")
+    created_at: datetime = Field(description="Creation moment in UTC")
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary merchant data")
+    failure_reason: FailureReasons | None = Field(default=None, description="Failure reason")
+    error_message: str | None = Field(default=None, description="Error message")
 
     def mark_pending(self) -> None:
         if PaymentStatuses.PENDING not in _ALLOWED_TRANSITIONS[self.status]:

@@ -3,9 +3,13 @@ from uuid import UUID
 import pytest
 from httpx import AsyncClient
 from src.contexts.core_payment.domain.statuses import PaymentStatuses
+from src.contexts.core_payment.infrastructure.providers.base import ProviderInitiationError
 from src.shared.ids import new_uuid
-from tests.fixtures.client import API_KEY
+from tests.fixtures.client import API_KEY, make_client
+from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
 from tests.fixtures.payment import FakePaymentRepository, make_payment
+from tests.fixtures.providers import RecordingFakeProvider
+from tests.fixtures.session import FakeSession
 
 
 @pytest.mark.anyio
@@ -75,7 +79,7 @@ async def test_create_payment_returns_201_and_persists_payment(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["status"] == PaymentStatuses.CREATED.value
+    assert body["status"] == PaymentStatuses.PENDING.value
     assert body["amount"] == "100.50"
     assert body["currency"] == "USD"
     assert "payment_id" in body
@@ -85,6 +89,7 @@ async def test_create_payment_returns_201_and_persists_payment(
     assert stored is not None
     assert stored.provider_id == 1
     assert stored.metadata == {"order_id": "abc-123"}
+    assert stored.status is PaymentStatuses.PENDING
 
 
 @pytest.mark.anyio
@@ -134,3 +139,32 @@ async def test_create_payment_returns_422_on_invalid_field(
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_create_payment_returns_422_for_unknown_provider_id(client: AsyncClient) -> None:
+    payload = _valid_create_payload()
+    payload["provider_id"] = 2
+
+    response = await client.post("/payments", json=payload, headers={"X-API-Key": API_KEY})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_create_payment_returns_502_when_provider_unavailable(
+    fake_repo: FakePaymentRepository,
+    fake_key_repo: FakeIdempotencyKeyRepository,
+    fake_session: FakeSession,
+) -> None:
+    failing_provider = RecordingFakeProvider(error=ProviderInitiationError("down"))
+    async with make_client(fake_repo, fake_key_repo, fake_session, failing_provider) as client:
+        response = await client.post(
+            "/payments", json=_valid_create_payload(), headers={"X-API-Key": API_KEY}
+        )
+
+    assert response.status_code == 502
+    # The payment is kept as a trace of the attempt (Txn1 committed before the provider failure).
+    payments = list(fake_repo._payments.values())
+    assert len(payments) == 1
+    assert payments[0].status is PaymentStatuses.CREATED
