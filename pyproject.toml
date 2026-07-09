@@ -3,7 +3,7 @@ name = "payment-gateway"
 version = "0.1.0"
 description = "Payment gateway for merchants"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
@@ -17,7 +17,7 @@ dependencies = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -32,7 +32,7 @@ ignore = ["S101"]  # assert в тестах ок
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
