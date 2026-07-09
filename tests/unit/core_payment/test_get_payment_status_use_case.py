@@ -3,7 +3,7 @@ from src.contexts.core_payment.application.use_cases.get_payment_status import (
     GetPaymentStatusUseCase,
 )
 from src.contexts.core_payment.domain.exceptions import PaymentNotFoundError
-from src.contexts.core_payment.domain.payment import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.shared.ids import new_uuid
 from tests.fixtures.payment import FakePaymentRepository, make_payment
 

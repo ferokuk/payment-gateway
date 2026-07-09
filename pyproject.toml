@@ -3,12 +3,13 @@ name = "payment-gateway"
 version = "0.1.0"
 description = "Payment gateway for merchants"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
     "dishka>=1.10.1",
     "fastapi[standard]>=0.136.1",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.14.1",
     "sqlalchemy[asyncio]>=2.0.49",
     "structlog>=25.5.0",
@@ -17,33 +18,49 @@ dependencies = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
-ignore = ["S101"]  # assert в тестах ок
+ignore = ["S101"]  # assert is fine in tests
+# The repository contains Russian comments: short words consisting solely of Cyrillic letters
+# that look like Latin ones are not typos, so RUF001-003 are not wanted for them.
+allowed-confusables = ["а", "б", "г", "е", "о", "р", "с", "у", "х", "А", "В", "Е", "К", "М", "Н", "О", "Р", "С", "Т", "У", "Х"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
 "alembic/**" = ["E501"]
+# Default local-sandbox secrets from .env.example are not a leak.
+"notebooks/**" = ["S105", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
 explicit_package_bases = true
 mypy_path = "."
 
+# pandas ships without inline types; the notebook client must type-check
+# even in environments where pandas-stubs is not installed.
+[[tool.mypy.overrides]]
+module = ["pandas.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
     "pytest>=9.0.3",
     "ruff>=0.15.13",
+]
+notebooks = [
+    "ipykernel>=7.3.0",
+    "jupyterlab>=4.6.1",
+    "pandas>=3.0.3",
 ]
 
 [tool.pytest.ini_options]

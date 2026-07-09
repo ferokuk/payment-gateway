@@ -3,16 +3,14 @@ services:
     image: postgres:17
     container_name: postgres_db
     restart: always
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: payment_gateway
+    env_file:
+      - .env
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_gateway"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,11 +18,8 @@ services:
   migrate:
     build: .
     container_name: payment_gateway_migrate
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@database:5432/payment_gateway
-      APP_ENV: docker
-      IS_DEBUG: "False"
-      API_KEY: local-dev-api-key
+    env_file:
+      - .env
     command: ["alembic", "upgrade", "head"]
     depends_on:
       database:
@@ -34,12 +29,8 @@ services:
     build: .
     container_name: payment_gateway_app
     restart: always
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@database:5432/payment_gateway
-      APP_ENV: docker
-      APP_PORT: 8000
-      IS_DEBUG: "False"
-      API_KEY: local-dev-api-key
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     depends_on:

@@ -1,8 +1,8 @@
 """init
 
-Revision ID: 2deeed7ca8af
+Revision ID: 38c2e1e12657
 Revises:
-Create Date: 2026-05-11 16:01:22.733224
+Create Date: 2026-06-07 23:32:12.114852
 
 """
 
@@ -13,7 +13,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = "2deeed7ca8af"
+revision: str = "38c2e1e12657"
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -48,6 +48,14 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "failure_reason",
+            sa.Enum(
+                "TIMEOUT", "INSUFFICIENT_FUNDS", "FRAUD", "LIMIT_EXCEEDED", name="failurereasons"
+            ),
+            nullable=True,
+        ),
+        sa.Column("error_message", sa.String(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
     # ### end Alembic commands ###
