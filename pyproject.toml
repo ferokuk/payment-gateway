@@ -28,6 +28,8 @@ ignore = ["S101"]  # assert в тестах ок
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
 "alembic/**" = ["E501"]
+# Default local-sandbox secrets from .env.example are not a leak.
+"notebooks/**" = ["S105", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -40,11 +42,22 @@ exclude = ["alembic/versions/"]
 explicit_package_bases = true
 mypy_path = "."
 
+# pandas ships without inline types; the notebook client must type-check
+# even in environments where pandas-stubs is not installed.
+[[tool.mypy.overrides]]
+module = ["pandas.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
     "pytest>=9.0.3",
     "ruff>=0.15.13",
+]
+notebooks = [
+    "ipykernel>=7.3.0",
+    "jupyterlab>=4.6.1",
+    "pandas>=3.0.3",
 ]
 
 [tool.pytest.ini_options]
