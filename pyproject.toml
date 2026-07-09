@@ -23,7 +23,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
-ignore = ["S101"]  # assert в тестах ок
+ignore = ["S101"]  # assert is fine in tests
+# The repository contains Russian comments: short words consisting solely of Cyrillic letters
+# that look like Latin ones are not typos, so RUF001-003 are not wanted for them.
+allowed-confusables = ["а", "б", "г", "е", "о", "р", "с", "у", "х", "А", "В", "Е", "К", "М", "Н", "О", "Р", "С", "Т", "У", "Х"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
