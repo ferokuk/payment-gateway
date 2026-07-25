@@ -10,4 +10,32 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy src
+
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      # The money invariants — concurrent reservations, the CHECK constraint,
+      # the status CAS — are only provable against a real database: with no
+      # TEST_DATABASE_URL the *_db.py tests skip and CI stays green while the
+      # guarded UPDATE goes unverified.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: payment_gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d payment_gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # A dedicated database: the tests create and drop the whole schema.
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras
       - run: uv run pytest
