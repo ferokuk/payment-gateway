@@ -66,7 +66,10 @@ _ALLOWED_TRANSITIONS: dict[RefundStatuses, frozenset[RefundStatuses]] = {
     ),
     RefundStatuses.SUCCESS: frozenset(),
     RefundStatuses.FAILED: frozenset(),
-    RefundStatuses.ERROR: frozenset(),
+    # ERROR is "the provider does not know the outcome", not "the end". The
+    # money it reserved stays held until someone learns the truth, so there
+    # must be a way out once the provider finally answers.
+    RefundStatuses.ERROR: frozenset({RefundStatuses.SUCCESS, RefundStatuses.FAILED}),
 }
 
 _ALLOWED_FAILURE_REASONS: dict[RefundStatuses, frozenset[RefundFailureReasons]] = {
@@ -75,6 +78,15 @@ _ALLOWED_FAILURE_REASONS: dict[RefundStatuses, frozenset[RefundFailureReasons]] 
     # a refund it did take.
     RefundStatuses.CREATED: frozenset({RefundFailureReasons.NOT_ACCEPTED_BY_PROVIDER}),
     RefundStatuses.PENDING: frozenset(
+        {
+            RefundFailureReasons.TIMEOUT,
+            RefundFailureReasons.CARD_UNAVAILABLE,
+            RefundFailureReasons.INSUFFICIENT_MERCHANT_BALANCE,
+        }
+    ),
+    # Same set as from PENDING: a refund reaches ERROR only after the provider
+    # accepted it, so "not accepted" would contradict its own history.
+    RefundStatuses.ERROR: frozenset(
         {
             RefundFailureReasons.TIMEOUT,
             RefundFailureReasons.CARD_UNAVAILABLE,

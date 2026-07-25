@@ -11,6 +11,7 @@ from src.contexts.core_payment.infrastructure.providers.base import (
     FAKE_PROVIDER_ID,
     PaymentProvider,
     ProviderInitiationError,
+    RefundProviderStatus,
 )
 from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
 from tests.fixtures.payment import FakePaymentRepository
@@ -72,6 +73,9 @@ async def test_commits_txn1_before_calling_provider() -> None:
             self.commits_seen = session.commits
 
         async def initiate_refund(self, refund: Refund) -> None:
+            raise NotImplementedError  # payments only in this test
+
+        async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
             raise NotImplementedError  # payments only in this test
 
     provider = _CommitTrackingProvider()

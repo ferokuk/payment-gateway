@@ -1,6 +1,10 @@
 from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.domain.refund import Refund
-from src.contexts.core_payment.infrastructure.providers.base import PaymentProvider
+from src.contexts.core_payment.infrastructure.providers.base import (
+    PaymentProvider,
+    RefundProviderState,
+    RefundProviderStatus,
+)
 
 
 class RecordingFakeProvider(PaymentProvider):
@@ -12,12 +16,19 @@ class RecordingFakeProvider(PaymentProvider):
     """
 
     def __init__(
-        self, error: Exception | None = None, refund_error: Exception | None = None
+        self,
+        error: Exception | None = None,
+        refund_error: Exception | None = None,
+        refund_status: RefundProviderStatus | None = None,
     ) -> None:
         self.initiated: list[Payment] = []
         self.initiated_refunds: list[Refund] = []
+        self.status_queries: list[Refund] = []
         self._error = error
         self._refund_error = refund_error
+        # UNKNOWN by default: a test that does not care about reconciliation
+        # gets the answer that makes it leave everything alone.
+        self._refund_status = refund_status or RefundProviderStatus(RefundProviderState.UNKNOWN)
 
     async def initiate_payment(self, payment: Payment) -> None:
         if self._error is not None:
@@ -29,3 +40,7 @@ class RecordingFakeProvider(PaymentProvider):
         if error is not None:
             raise error
         self.initiated_refunds.append(refund)
+
+    async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
+        self.status_queries.append(refund)
+        return self._refund_status

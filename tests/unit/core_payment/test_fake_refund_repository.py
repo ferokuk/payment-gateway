@@ -8,51 +8,29 @@ from src.contexts.core_payment.domain.exceptions import (
 from src.contexts.core_payment.domain.statuses import RefundFailureReasons, RefundStatuses
 from tests.fixtures.refund import FakeRefundRepository, make_refund
 
-
-@pytest.mark.anyio
-async def test_list_stuck_created_filters_by_status_age_and_limit() -> None:
-    repo = FakeRefundRepository()
-    moment = datetime.now(UTC)
-    old_created = make_refund(status=RefundStatuses.CREATED, created_at=moment - timedelta(hours=2))
-    older_created = make_refund(
-        status=RefundStatuses.CREATED, created_at=moment - timedelta(hours=3)
-    )
-    fresh_created = make_refund(status=RefundStatuses.CREATED, created_at=moment)
-    ancient_created = make_refund(
-        status=RefundStatuses.CREATED, created_at=moment - timedelta(days=2)
-    )
-    old_pending = make_refund(status=RefundStatuses.PENDING, created_at=moment - timedelta(hours=2))
-    for refund in (old_created, older_created, fresh_created, ancient_created, old_pending):
-        await repo.add(refund)
-
-    window = {
-        "created_before": moment - timedelta(hours=1),
-        "created_after": moment - timedelta(days=1),
-    }
-    stuck = await repo.list_stuck_created(**window, limit=10)
-
-    # Oldest first, and only what is inside the window: fresh refunds are still
-    # in flight, the two-day-old one is past safe re-initiation, and a pending
-    # refund is not stuck at all.
-    assert [refund.id for refund in stuck] == [older_created.id, old_created.id]
-    assert [refund.id for refund in await repo.list_stuck_created(**window, limit=1)] == [
-        older_created.id
-    ]
+UNRESOLVED = (RefundStatuses.CREATED, RefundStatuses.PENDING, RefundStatuses.ERROR)
 
 
 @pytest.mark.anyio
-async def test_count_stuck_created_counts_everything_past_the_bound() -> None:
+async def test_list_unresolved_filters_by_status_age_and_limit() -> None:
     repo = FakeRefundRepository()
     moment = datetime.now(UTC)
-    for refund in (
-        make_refund(status=RefundStatuses.CREATED, created_at=moment - timedelta(days=2)),
-        make_refund(status=RefundStatuses.CREATED, created_at=moment - timedelta(days=3)),
-        make_refund(status=RefundStatuses.CREATED, created_at=moment),
-        make_refund(status=RefundStatuses.PENDING, created_at=moment - timedelta(days=2)),
-    ):
+    created = make_refund(status=RefundStatuses.CREATED, created_at=moment - timedelta(hours=2))
+    pending = make_refund(status=RefundStatuses.PENDING, created_at=moment - timedelta(hours=3))
+    errored = make_refund(status=RefundStatuses.ERROR, created_at=moment - timedelta(hours=1))
+    fresh = make_refund(status=RefundStatuses.CREATED, created_at=moment)
+    settled = make_refund(status=RefundStatuses.SUCCESS, created_at=moment - timedelta(hours=4))
+    for refund in (created, pending, errored, fresh, settled):
         await repo.add(refund)
 
-    assert await repo.count_stuck_created(created_before=moment - timedelta(days=1)) == 2
+    stale = moment - timedelta(minutes=30)
+    unresolved = await repo.list_unresolved(statuses=UNRESOLVED, created_before=stale, limit=10)
+    capped = await repo.list_unresolved(statuses=UNRESOLVED, created_before=stale, limit=1)
+
+    # Oldest first. A refund created a moment ago is still in flight, and one
+    # that already reached success has nothing left to reconcile.
+    assert [refund.id for refund in unresolved] == [pending.id, created.id, errored.id]
+    assert [refund.id for refund in capped] == [pending.id]
 
 
 @pytest.mark.anyio

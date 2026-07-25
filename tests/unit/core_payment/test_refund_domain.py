@@ -66,7 +66,6 @@ def test_mark_success_from_pending() -> None:
         (RefundStatuses.FAILED, "mark_pending"),
         (RefundStatuses.FAILED, "mark_success"),
         (RefundStatuses.ERROR, "mark_pending"),
-        (RefundStatuses.ERROR, "mark_success"),
     ],
 )
 def test_invalid_transition_raises(initial: RefundStatuses, method: str) -> None:
@@ -113,7 +112,6 @@ def test_mark_failed_from_pending_sets_status_and_reason(reason: RefundFailureRe
     [
         RefundStatuses.SUCCESS,
         RefundStatuses.FAILED,
-        RefundStatuses.ERROR,
     ],
 )
 def test_mark_failed_from_non_failable_state_raises_transition_error(
@@ -195,6 +193,47 @@ def test_mark_error_from_invalid_state_raises(initial: RefundStatuses) -> None:
 
     with pytest.raises(InvalidRefundStatusTransitionError):
         refund.mark_error("boom")
+
+
+# --- Leaving error: the outcome became known ---
+
+
+def test_mark_success_from_error() -> None:
+    # ERROR means "outcome unknown", not "the end": once the provider finally
+    # tells us what happened, the refund must be able to reach the real status.
+    refund = make_refund(status=RefundStatuses.ERROR)
+
+    refund.mark_success()
+
+    assert refund.status is RefundStatuses.SUCCESS
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        RefundFailureReasons.TIMEOUT,
+        RefundFailureReasons.CARD_UNAVAILABLE,
+        RefundFailureReasons.INSUFFICIENT_MERCHANT_BALANCE,
+    ],
+)
+def test_mark_failed_from_error(reason: RefundFailureReasons) -> None:
+    refund = make_refund(status=RefundStatuses.ERROR)
+
+    refund.mark_failed(reason)
+
+    assert refund.status is RefundStatuses.FAILED
+    assert refund.failure_reason is reason
+
+
+def test_mark_failed_from_error_rejects_not_accepted_reason() -> None:
+    # To reach error the refund passed through pending, so the provider did
+    # take it — claiming it was never accepted contradicts the history.
+    refund = make_refund(status=RefundStatuses.ERROR)
+
+    with pytest.raises(InvalidRefundFailureReasonError):
+        refund.mark_failed(RefundFailureReasons.NOT_ACCEPTED_BY_PROVIDER)
+
+    assert refund.status is RefundStatuses.ERROR
 
 
 # --- Invariant: reasons are defined for all failable statuses ---

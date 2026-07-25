@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -36,24 +37,16 @@ class FakeRefundRepository:
         found.sort(key=lambda refund: (refund.created_at, refund.id))
         return [refund.model_copy(deep=True) for refund in found]
 
-    async def list_stuck_created(
-        self, *, created_before: datetime, created_after: datetime, limit: int
+    async def list_unresolved(
+        self, *, statuses: Collection[RefundStatuses], created_before: datetime, limit: int
     ) -> list[Refund]:
         found = [
             refund
             for refund in self._refunds.values()
-            if refund.status is RefundStatuses.CREATED
-            and created_after <= refund.created_at < created_before
+            if refund.status in statuses and refund.created_at < created_before
         ]
         found.sort(key=lambda refund: refund.created_at)
         return [refund.model_copy(deep=True) for refund in found[:limit]]
-
-    async def count_stuck_created(self, *, created_before: datetime) -> int:
-        return sum(
-            1
-            for refund in self._refunds.values()
-            if refund.status is RefundStatuses.CREATED and refund.created_at < created_before
-        )
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
         stored = self._refunds.get(refund.id)
