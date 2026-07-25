@@ -10,6 +10,7 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from types import TracebackType
 from typing import Any, Literal
 
@@ -50,6 +51,26 @@ SCENARIO_EXPECTED_FINAL: dict[str, str] = {
     "insufficient_funds": "failed",
     "fraud": "failed",
     "limit_exceeded": "failed",
+    "timeout": "failed",
+    "error": "error",
+}
+
+# Refund scenario -> callback chain. A refund has no processing step: at real
+# PSPs it is a single-step operation (Stripe: pending -> succeeded/failed).
+REFUND_SCENARIO_CALLBACKS: dict[str, list[dict[str, str]]] = {
+    "success": [{"status": "success"}],
+    "card_unavailable": [{"status": "failed", "failure_reason": "card_unavailable"}],
+    "insufficient_merchant_balance": [
+        {"status": "failed", "failure_reason": "insufficient_merchant_balance"}
+    ],
+    "timeout": [{"status": "failed", "failure_reason": "timeout"}],
+    "error": [{"status": "error", "error_message": "Internal provider error"}],
+}
+
+REFUND_SCENARIO_EXPECTED_FINAL: dict[str, str] = {
+    "success": "success",
+    "card_unavailable": "failed",
+    "insufficient_merchant_balance": "failed",
     "timeout": "failed",
     "error": "error",
 }
@@ -98,6 +119,13 @@ class RequestResult:
         """Payment ID from the response body, if present."""
         if isinstance(self.data, dict) and self.data.get("payment_id") is not None:
             return str(self.data["payment_id"])
+        return None
+
+    @property
+    def refund_id(self) -> str | None:
+        """Refund ID from the response body, if present."""
+        if isinstance(self.data, dict) and self.data.get("refund_id") is not None:
+            return str(self.data["refund_id"])
         return None
 
 
@@ -180,6 +208,54 @@ class GatewayClient:
         return await self._request(
             "POST",
             "/callbacks/payments",
+            headers={"X-Callback-Secret": self.config.callback_secret},
+            json_body=body,
+        )
+
+    async def create_refund(
+        self,
+        payment_id: str,
+        *,
+        amount: str = "10.00",
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> RequestResult:
+        headers = {"X-API-Key": self.config.api_key}
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        return await self._request(
+            "POST",
+            f"/payments/{payment_id}/refunds",
+            headers=headers,
+            json_body={"amount": amount, "metadata": metadata},
+        )
+
+    async def get_refund(self, refund_id: str) -> RequestResult:
+        return await self._request(
+            "GET", f"/refunds/{refund_id}", headers={"X-API-Key": self.config.api_key}
+        )
+
+    async def list_refunds(self, payment_id: str) -> RequestResult:
+        return await self._request(
+            "GET", f"/payments/{payment_id}/refunds", headers={"X-API-Key": self.config.api_key}
+        )
+
+    async def send_refund_callback(
+        self,
+        refund_id: str,
+        status: str,
+        *,
+        failure_reason: str | None = None,
+        error_message: str | None = None,
+    ) -> RequestResult:
+        body: dict[str, Any] = {"refund_id": refund_id, "status": status}
+        if failure_reason is not None:
+            body["failure_reason"] = failure_reason
+        if error_message is not None:
+            body["error_message"] = error_message
+        return await self._request(
+            "POST",
+            "/callbacks/refunds",
             headers={"X-Callback-Secret": self.config.callback_secret},
             json_body=body,
         )
@@ -401,6 +477,29 @@ async def wait_for_status(
     return False
 
 
+async def wait_for_refunded_amount(
+    client: GatewayClient, payment_id: str, expected: str, *, timeout_s: float = 5.0
+) -> bool:
+    """Waits until the payment's refunded_amount becomes VISIBLE as expected.
+
+    The reservation released by a failed refund is committed after the callback
+    response, so the counter lags for a moment — same barrier as
+    wait_for_status, only for money instead of a status.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = await client.get_payment(payment_id)
+        if (
+            result.ok
+            and result.status_code == 200
+            # Compared as Decimal: "6.0" and "6.00" are the same amount.
+            and Decimal(str(result.data["refunded_amount"])) == Decimal(expected)
+        ):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
 async def run_lifecycle(
     client: GatewayClient,
     *,
@@ -433,6 +532,142 @@ async def run_lifecycle(
     return await drive_scenario(client, payment_id, scenario)
 
 
+@dataclass(frozen=True)
+class RefundResult:
+    """One refund's journey through its own state machine."""
+
+    payment_id: str
+    amount: str
+    scenario: str
+    refund_id: str | None
+    trajectory: list[str]
+    final_status: str | None
+    error: str | None
+    retries: int = 0
+
+
+@dataclass(frozen=True)
+class _RefundProgress:
+    """What driving or polling learned about a refund — the part of
+    RefundResult that does not depend on how the refund was created."""
+
+    trajectory: list[str]
+    final_status: str | None
+    error: str | None
+    retries: int = 0
+
+
+async def _poll_refund(
+    client: GatewayClient, refund_id: str, *, timeout_s: float, interval_s: float
+) -> _RefundProgress:
+    trajectory: list[str] = []
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = await client.get_refund(refund_id)
+        if not result.ok:
+            # GET is idempotent: a dropped connection is worth retrying.
+            await asyncio.sleep(interval_s)
+            continue
+        if result.status_code != 200:
+            error = f"GET /refunds: {result.status_code or result.error}"
+            return _RefundProgress(trajectory, None, error)
+        status = result.data["status"]
+        if not trajectory or trajectory[-1] != status:
+            trajectory.append(status)
+        if status in TERMINAL_STATUSES:
+            return _RefundProgress(trajectory, status, None)
+        await asyncio.sleep(interval_s)
+    return _RefundProgress(trajectory, None, f"no terminal status within {timeout_s}s")
+
+
+async def _send_refund_step(
+    client: GatewayClient, refund_id: str, step: dict[str, str]
+) -> RequestResult:
+    return await client.send_refund_callback(
+        refund_id,
+        step["status"],
+        failure_reason=step.get("failure_reason"),
+        error_message=step.get("error_message"),
+    )
+
+
+async def _drive_refund(
+    client: GatewayClient,
+    refund_id: str,
+    scenario: str,
+    *,
+    max_retries_per_step: int = 5,
+    retry_delay_s: float = 0.1,
+) -> _RefundProgress:
+    # A successful creation leaves the refund in pending.
+    trajectory = ["pending"]
+    retries = 0
+    for step in REFUND_SCENARIO_CALLBACKS[scenario]:
+        result = await _send_refund_step(client, refund_id, step)
+        step_retries = 0
+        # A 409 here means the refund is still visible as created: the service
+        # commits after answering, so a callback can outrun its own transaction.
+        while (not result.ok or result.status_code == 409) and step_retries < max_retries_per_step:
+            step_retries += 1
+            await asyncio.sleep(retry_delay_s)
+            result = await _send_refund_step(client, refund_id, step)
+        retries += step_retries
+        if result.status_code != 200:
+            detail = result.status_code or result.error
+            error = f"callback {step['status']}: {detail} {result.data}"
+            return _RefundProgress(trajectory, None, error, retries)
+        trajectory.append(result.data["status"])
+    return _RefundProgress(trajectory, trajectory[-1], None, retries)
+
+
+async def run_refund(
+    client: GatewayClient,
+    payment_id: str,
+    *,
+    mode: ProviderMode,
+    scenario: str = "success",
+    amount: str = "10.00",
+    idempotency_key: str | None = None,
+    poll_timeout_s: float = 30.0,
+) -> RefundResult:
+    """Creates a refund on an already successful payment and drives it to a terminal status.
+
+    Mirrors run_lifecycle: in auto mode the scenario travels to the provider in
+    metadata.fake_scenario and we only observe, in manual mode the notebook
+    sends the callback itself.
+    """
+    metadata = {"fake_scenario": scenario} if mode == "auto" else None
+    created = await client.create_refund(
+        payment_id, amount=amount, metadata=metadata, idempotency_key=idempotency_key
+    )
+    if created.status_code != 201:
+        return RefundResult(
+            payment_id=payment_id,
+            amount=amount,
+            scenario=scenario,
+            refund_id=created.refund_id,
+            trajectory=[],
+            final_status=None,
+            error=f"create: {created.status_code or created.error} {created.data}",
+        )
+    refund_id = created.refund_id
+    assert refund_id is not None  # a 201 without refund_id is a broken API contract
+    if mode == "auto":
+        progress = await _poll_refund(client, refund_id, timeout_s=poll_timeout_s, interval_s=0.25)
+    else:
+        progress = await _drive_refund(client, refund_id, scenario)
+    return RefundResult(
+        payment_id=payment_id,
+        amount=amount,
+        scenario=scenario,
+        refund_id=refund_id,
+        trajectory=progress.trajectory,
+        final_status=progress.final_status,
+        error=progress.error,
+        retries=progress.retries,
+    )
+
+
 def _quantile_ms(latencies: pd.Series[float], q: float) -> float | None:
     return None if latencies.empty else round(float(latencies.quantile(q)), 1)
 
@@ -454,6 +689,27 @@ def summarize_waves(reports: Sequence[WaveReport[RequestResult]]) -> pd.DataFram
                 "p99_ms": _quantile_ms(latencies, 0.99),
                 "wall_s": round(report.wall_time_s, 2),
                 "rps": round(len(report.results) / report.wall_time_s, 1),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_refunds(results: Sequence[RefundResult]) -> pd.DataFrame:
+    """One row per refund: did each reach its expected terminal status."""
+    rows = []
+    for result in results:
+        expected = REFUND_SCENARIO_EXPECTED_FINAL.get(result.scenario)
+        rows.append(
+            {
+                "scenario": result.scenario,
+                "amount": result.amount,
+                "refund_id": result.refund_id,
+                "trajectory": " -> ".join(result.trajectory),
+                "final_status": result.final_status,
+                "expected": expected,
+                "ok": result.final_status is not None and result.final_status == expected,
+                "retries": result.retries,
+                "error": result.error,
             }
         )
     return pd.DataFrame(rows)
