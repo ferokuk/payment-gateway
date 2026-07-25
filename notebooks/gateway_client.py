@@ -6,11 +6,14 @@ in GatewayClient plus one cell in the notebook.
 """
 
 import asyncio
+import sys
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal
 
@@ -18,6 +21,10 @@ import httpx
 import pandas as pd
 
 ProviderMode = Literal["manual", "auto"]
+
+# Resolved once at import: the reconciliation helper needs the repository root
+# on sys.path, and touching the filesystem inside a coroutine would block it.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Terminal payment statuses — no transitions out of them.
 TERMINAL_STATUSES = frozenset({"success", "error", "failed"})
@@ -89,6 +96,9 @@ class GatewayConfig:
     base_url: str = "http://localhost:8000"
     api_key: str = "local-dev-api-key"
     callback_secret: str = "local-dev-callback-secret"
+    # Only the reconciliation section needs it: that job lives behind the API,
+    # not in front of it. The host port comes from docker-compose.
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/payment_gateway"
     # A wave of 1000 requests saturates the service's DB pool: the tail waits
     # noticeably longer than httpx's default 5 seconds.
     timeout_seconds: float = 60.0
@@ -498,6 +508,77 @@ async def wait_for_refunded_amount(
             return True
         await asyncio.sleep(0.05)
     return False
+
+
+async def wait_for_refund_status(
+    client: GatewayClient, refund_id: str, status: str, *, timeout_s: float = 30.0
+) -> bool:
+    """Waits until the refund becomes VISIBLE in the given status."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = await client.get_refund(refund_id)
+        if result.ok and result.status_code == 200 and result.data["status"] == status:
+            return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def run_reconciliation_pass(
+    config: GatewayConfig | None = None,
+    *,
+    stuck_after_seconds: float = 0.0,
+    give_up_after_seconds: float = 72000.0,
+    batch_size: int = 100,
+) -> dict[str, int]:
+    """Runs one reconciliation pass in place and returns its report.
+
+    In production this is the separate `reconciler` container with its own
+    event loop; here the same use case is called directly so that a notebook
+    run can show a pass end to end. The staleness threshold defaults to zero —
+    nobody wants to wait fifteen minutes for a refund to count as stuck.
+
+    This is also the only part of the lab that talks to the database instead of
+    the API, because the job itself lives behind the API.
+    """
+    config = config or GatewayConfig()
+    # Imported here rather than at module level: everything else in this file
+    # is a plain HTTP client and must keep working without the app package.
+    sys.path.insert(0, str(_REPO_ROOT))
+    from src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds import (
+        ReconcileStuckRefundsUseCase,
+    )
+    from src.contexts.core_payment.infrastructure.database.repositories import (
+        SQLAlchemyPaymentRepository,
+        SQLAlchemyRefundRepository,
+    )
+    from src.contexts.core_payment.infrastructure.providers.fake_auto import (
+        AutoCallbackFakePaymentProvider,
+    )
+    from src.shared.database.engine import create_engine, create_sessionmaker
+
+    engine = create_engine(config.database_url)
+    maker = create_sessionmaker(engine)
+    async with httpx.AsyncClient() as http_client, maker() as session:
+        provider = AutoCallbackFakePaymentProvider(
+            http_client=http_client,
+            callback_url=f"{config.base_url}/callbacks/payments",
+            refund_callback_url=f"{config.base_url}/callbacks/refunds",
+            callback_secret=config.callback_secret,
+            delay_seconds=0.1,
+        )
+        use_case = ReconcileStuckRefundsUseCase(
+            SQLAlchemyRefundRepository(session),
+            SQLAlchemyPaymentRepository(session),
+            provider,
+            session,
+            stuck_after=timedelta(seconds=stuck_after_seconds),
+            give_up_after=timedelta(seconds=give_up_after_seconds),
+            batch_size=batch_size,
+        )
+        report = await use_case()
+        await session.commit()
+    await engine.dispose()
+    return {key: int(value) for key, value in report.model_dump().items()}
 
 
 async def run_lifecycle(
