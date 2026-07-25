@@ -37,13 +37,14 @@ class GetRefundStatusOutputDTO(BaseModel):
 
 
 class ReconciliationReportDTO(BaseModel):
-    """Outcome of one reconciliation pass over refunds stuck in CREATED."""
+    """Outcome of one reconciliation pass over refunds whose fate is still open."""
 
-    resumed: int = Field(default=0, description="Re-initiated at the provider, moved to pending")
-    closed: int = Field(default=0, description="Provider refused it; reservation released")
-    unresolved: int = Field(default=0, description="Outcome still unknown; retried next pass")
-    conflicts: int = Field(default=0, description="Someone else finished the refund first")
-    abandoned: int = Field(default=0, description="Too old to re-initiate safely; needs a human")
+    resumed: int = Field(default=0, description="The provider has it; moved to pending")
+    completed: int = Field(default=0, description="Settled as success on the provider's word")
+    closed: int = Field(default=0, description="Settled as failed; reservation released")
+    unresolved: int = Field(default=0, description="No definitive answer; retried next pass")
+    disputed: int = Field(default=0, description="Provider denies a refund we know it accepted")
+    conflicts: int = Field(default=0, description="Someone else applied the transition first")
 
 
 class RefundCallbackInputDTO(BaseModel):

@@ -1,10 +1,11 @@
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, func, select
+from sqlalchemy import CursorResult, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -218,47 +219,30 @@ class SQLAlchemyRefundRepository:
         models = (await self._session.execute(stmt)).scalars().all()
         return [self._to_domain(model) for model in models]
 
-    async def list_stuck_created(
-        self, *, created_before: datetime, created_after: datetime, limit: int
+    async def list_unresolved(
+        self, *, statuses: Collection[RefundStatuses], created_before: datetime, limit: int
     ) -> list[Refund]:
-        """Refunds that never left CREATED and can still be re-initiated safely.
+        """Refunds whose fate is still open, oldest first.
 
-        Bounded on both sides: too young means still in flight, too old means
-        the provider has likely forgotten the deduplication key, and a repeat
-        would create a second real refund.
+        Age is measured by created_at rather than by the last transition: there
+        is no updated_at column, and the cost of the approximation is only a
+        harmless early status query for a refund that just moved.
         """
         # Deliberately without FOR UPDATE: the lock would be held across the
         # provider HTTP call and block a legitimate callback for that refund.
-        # Safety rests on the CAS in update() plus deduplication on the provider
-        # side — a second reconciler wastes a call but cannot refund twice.
+        # Safety rests on the CAS in update() — a second reconciler wastes a
+        # call but cannot apply the same transition twice.
         stmt = (
             select(RefundModel)
             .where(
-                RefundModel.status == RefundStatuses.CREATED,
+                RefundModel.status.in_(statuses),
                 RefundModel.created_at < created_before,
-                RefundModel.created_at >= created_after,
             )
             .order_by(RefundModel.created_at)
             .limit(limit)
         )
         models = (await self._session.execute(stmt)).scalars().all()
         return [self._to_domain(model) for model in models]
-
-    async def count_stuck_created(self, *, created_before: datetime) -> int:
-        """How many refunds are stuck beyond the point of safe re-initiation.
-
-        They are excluded from the batch so they cannot starve fresher ones,
-        which would leave them invisible — hence a separate count to report.
-        """
-        stmt = (
-            select(func.count())
-            .select_from(RefundModel)
-            .where(
-                RefundModel.status == RefundStatuses.CREATED,
-                RefundModel.created_at < created_before,
-            )
-        )
-        return (await self._session.execute(stmt)).scalar_one()
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
         # A refund transition is an atomic CAS, same as for payments.

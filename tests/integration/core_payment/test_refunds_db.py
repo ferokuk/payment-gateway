@@ -23,10 +23,11 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from src.contexts.core_payment.application.dto.refund import ReconciliationReportDTO
 from src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds import (
+    UNRESOLVED_STATUSES,
     ReconcileStuckRefundsUseCase,
 )
 from src.contexts.core_payment.domain.exceptions import StaleRefundStateError
-from src.contexts.core_payment.domain.statuses import RefundStatuses
+from src.contexts.core_payment.domain.statuses import RefundFailureReasons, RefundStatuses
 from src.contexts.core_payment.infrastructure.database.models import (
     PaymentModel,
     RefundModel,
@@ -39,6 +40,8 @@ from src.contexts.core_payment.infrastructure.providers.base import (
     PaymentProvider,
     ProviderInitiationError,
     ProviderRejectedError,
+    RefundProviderState,
+    RefundProviderStatus,
 )
 from src.contexts.core_payment.ioc import CorePaymentProvider
 from src.contexts.core_payment.presentation.routers.callbacks import (
@@ -230,7 +233,7 @@ async def test_check_constraint_rejects_bypassing_write(_tables: None) -> None:
 
 
 @pytest.mark.anyio
-async def test_list_stuck_created_sees_only_old_unfinished_refunds(_tables: None) -> None:
+async def test_list_unresolved_sees_only_old_open_refunds(_tables: None) -> None:
     # A refund whose initiation failed stays in created with the reservation
     # held — exactly what reconciliation has to find.
     down = RecordingFakeProvider(refund_error=ProviderInitiationError("provider down"))
@@ -246,23 +249,19 @@ async def test_list_stuck_created_sees_only_old_unfinished_refunds(_tables: None
     maker = create_sessionmaker(engine)
     async with maker() as session:
         repo = SQLAlchemyRefundRepository(session)
-        too_young = await repo.list_stuck_created(
-            created_before=now - timedelta(minutes=15),
-            created_after=now - timedelta(days=1),
-            limit=10,
+        too_young = await repo.list_unresolved(
+            statuses=UNRESOLVED_STATUSES, created_before=now - timedelta(minutes=15), limit=10
         )
-        overdue = await repo.list_stuck_created(
-            created_before=now, created_after=now - timedelta(days=1), limit=10
+        overdue = await repo.list_unresolved(
+            statuses=UNRESOLVED_STATUSES, created_before=now, limit=10
         )
-        past_the_window = await repo.list_stuck_created(
-            created_before=now, created_after=now + timedelta(seconds=1), limit=10
+        settled_only = await repo.list_unresolved(
+            statuses=(RefundStatuses.SUCCESS,), created_before=now, limit=10
         )
-        beyond_count = await repo.count_stuck_created(created_before=now)
     await engine.dispose()
 
     assert too_young == []
-    assert past_the_window == []
-    assert beyond_count == 1
+    assert settled_only == []
     assert [refund.status for refund in overdue] == [RefundStatuses.CREATED]
     assert overdue[0].payment_id == UUID(payment_id)
     assert await _refunded_amount(payment_id) == Decimal("10.00")
@@ -306,7 +305,12 @@ async def test_reconciliation_closes_refused_refund_and_frees_the_remainder(
 
     assert await _refunded_amount(payment_id) == Decimal("60.00")
 
-    report = await _reconcile(RecordingFakeProvider(refund_error=ProviderRejectedError("no such")))
+    report = await _reconcile(
+        RecordingFakeProvider(
+            refund_status=RefundProviderStatus(RefundProviderState.ABSENT),
+            refund_error=ProviderRejectedError("payment too old to refund"),
+        )
+    )
 
     assert (report.closed, report.resumed, report.unresolved) == (1, 0, 0)
     assert await _refund_statuses() == ["failed"]
@@ -325,7 +329,7 @@ async def test_reconciliation_resumes_refund_the_provider_takes(_tables: None) -
         payment_id = await _create_success_payment(client)
         await _stuck_refund(client, payment_id, "60.00")
 
-    back_up = RecordingFakeProvider()
+    back_up = RecordingFakeProvider(refund_status=RefundProviderStatus(RefundProviderState.ABSENT))
     report = await _reconcile(back_up)
 
     assert (report.resumed, report.closed) == (1, 0)
@@ -333,6 +337,61 @@ async def test_reconciliation_resumes_refund_the_provider_takes(_tables: None) -
     # The reservation stays: the refund is alive at the provider now.
     assert await _refunded_amount(payment_id) == Decimal("60.00")
     assert len(back_up.initiated_refunds) == 1
+
+
+@pytest.mark.anyio
+async def test_reconciliation_settles_a_refund_whose_callback_was_lost(_tables: None) -> None:
+    # The refund reached pending and no callback ever came: the reservation is
+    # held forever until the provider is asked directly.
+    async with _db_client() as client:
+        payment_id = await _create_success_payment(client)
+        created = await _post_refund(client, payment_id, "60.00")
+        assert created.status_code == 201
+
+    assert await _refund_statuses() == ["pending"]
+
+    report = await _reconcile(
+        RecordingFakeProvider(
+            refund_status=RefundProviderStatus(
+                RefundProviderState.FAILED, RefundFailureReasons.CARD_UNAVAILABLE
+            )
+        )
+    )
+
+    assert (report.closed, report.unresolved) == (1, 0)
+    assert await _refund_statuses() == ["failed"]
+    assert await _refunded_amount(payment_id) == Decimal("0.00")
+
+
+@pytest.mark.anyio
+async def test_reconciliation_settles_a_refund_the_provider_errored_on(_tables: None) -> None:
+    async with _db_client() as client:
+        payment_id = await _create_success_payment(client)
+        created = await _post_refund(client, payment_id, "60.00")
+        refund_id = created.json()["refund_id"]
+        errored = await client.post(
+            "/callbacks/refunds",
+            json={
+                "refund_id": refund_id,
+                "status": "error",
+                "error_message": "Internal provider error",
+            },
+            headers={"X-Callback-Secret": CALLBACK_SECRET},
+        )
+        assert errored.status_code == 200
+
+    assert await _refund_statuses() == ["error"]
+    # The reservation is deliberately held while the outcome is unknown.
+    assert await _refunded_amount(payment_id) == Decimal("60.00")
+
+    report = await _reconcile(
+        RecordingFakeProvider(refund_status=RefundProviderStatus(RefundProviderState.SUCCEEDED))
+    )
+
+    # The provider settled it as success, so the money really did leave.
+    assert (report.completed, report.closed) == (1, 0)
+    assert await _refund_statuses() == ["success"]
+    assert await _refunded_amount(payment_id) == Decimal("60.00")
 
 
 @pytest.mark.anyio
