@@ -7,14 +7,20 @@ from typing import Any
 import httpx
 import pytest
 from src.contexts.core_payment.domain.payment import Payment
-from src.contexts.core_payment.domain.statuses import PaymentStatuses
-from src.contexts.core_payment.infrastructure.providers.base import ProviderInitiationError
+from src.contexts.core_payment.domain.refund import Refund
+from src.contexts.core_payment.domain.statuses import PaymentStatuses, RefundStatuses
+from src.contexts.core_payment.infrastructure.providers.base import (
+    ProviderInitiationError,
+    ProviderRejectedError,
+)
 from src.contexts.core_payment.infrastructure.providers.fake_auto import (
     AutoCallbackFakePaymentProvider,
 )
 from tests.fixtures.payment import make_payment
+from tests.fixtures.refund import make_refund
 
 CALLBACK_URL = "http://test/callbacks/payments"
+REFUND_CALLBACK_URL = "http://test/callbacks/refunds"
 SECRET = "unit-test-secret"
 
 
@@ -34,6 +40,7 @@ async def _make_provider(
         yield AutoCallbackFakePaymentProvider(
             http_client=client,
             callback_url=CALLBACK_URL,
+            refund_callback_url=REFUND_CALLBACK_URL,
             callback_secret=SECRET,
             delay_seconds=0,
         )
@@ -138,3 +145,97 @@ async def test_delivery_failure_is_swallowed() -> None:
         await _initiate_and_wait(provider, _payment_with_scenario("success"))
 
     assert len(recorded) == 2
+
+
+def _refund_with_scenario(scenario: str | None) -> Refund:
+    refund = make_refund(status=RefundStatuses.CREATED)
+    if scenario is not None:
+        refund.metadata = {"fake_scenario": scenario}
+    return refund
+
+
+async def _initiate_refund_and_wait(
+    provider: AutoCallbackFakePaymentProvider, refund: Refund
+) -> None:
+    await provider.initiate_refund(refund)
+    tasks = set(provider._tasks)
+    if tasks:
+        # Hang guard only (delay_seconds=0, MockTransport): generous on purpose.
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        (None, [{"status": "success"}]),
+        ("success", [{"status": "success"}]),
+        (
+            "card_unavailable",
+            [{"status": "failed", "failure_reason": "card_unavailable"}],
+        ),
+        (
+            "insufficient_merchant_balance",
+            [{"status": "failed", "failure_reason": "insufficient_merchant_balance"}],
+        ),
+        ("timeout", [{"status": "failed", "failure_reason": "timeout"}]),
+        ("error", [{"status": "error", "error_message": "Internal provider error"}]),
+    ],
+)
+@pytest.mark.anyio
+async def test_refund_scenario_sends_expected_callback_sequence(
+    scenario: str | None, expected: list[dict[str, Any]]
+) -> None:
+    recorded: list[httpx.Request] = []
+    refund = _refund_with_scenario(scenario)
+
+    async with _make_provider(recorded) as provider:
+        await _initiate_refund_and_wait(provider, refund)
+
+    bodies = _sent_bodies(recorded)
+    assert [
+        {key: value for key, value in body.items() if key != "refund_id"} for body in bodies
+    ] == expected
+    assert all(body["refund_id"] == str(refund.id) for body in bodies)
+    assert all(request.headers["X-Callback-Secret"] == SECRET for request in recorded)
+    assert all(str(request.url) == REFUND_CALLBACK_URL for request in recorded)
+
+
+@pytest.mark.parametrize("scenario", ["initiation_error", "unknown_scenario"])
+@pytest.mark.anyio
+async def test_bad_refund_scenario_raises_initiation_error_and_sends_nothing(
+    scenario: str,
+) -> None:
+    recorded: list[httpx.Request] = []
+
+    async with _make_provider(recorded) as provider:
+        with pytest.raises(ProviderInitiationError):
+            await provider.initiate_refund(_refund_with_scenario(scenario))
+
+        assert recorded == []
+        assert provider._tasks == set()
+
+
+@pytest.mark.parametrize("scenario", ["initiation_error", "unknown_scenario"])
+@pytest.mark.anyio
+async def test_refused_refund_initiation_is_a_definitive_rejection(scenario: str) -> None:
+    # A refusal is the one failure whose outcome is known: nothing was taken,
+    # so reconciliation may close the refund and give the reservation back.
+    recorded: list[httpx.Request] = []
+
+    async with _make_provider(recorded) as provider:
+        with pytest.raises(ProviderRejectedError):
+            await provider.initiate_refund(_refund_with_scenario(scenario))
+
+
+@pytest.mark.anyio
+async def test_repeated_refund_initiation_sends_one_callback_chain() -> None:
+    # Reconciliation re-initiates refunds stuck in CREATED; without dedup by
+    # refund id the payer would get their money a second time.
+    recorded: list[httpx.Request] = []
+    refund = _refund_with_scenario("success")
+
+    async with _make_provider(recorded) as provider:
+        await _initiate_refund_and_wait(provider, refund)
+        await _initiate_refund_and_wait(provider, refund)
+
+    assert len(recorded) == 1

@@ -42,7 +42,11 @@ class ProcessProviderCallbackUseCase:
                 payment_id=str(payment.id),
                 status=command.status,
             )
-            return GetPaymentStatusOutputDTO(payment_id=payment.id, status=payment.status)
+            return GetPaymentStatusOutputDTO(
+                payment_id=payment.id,
+                status=payment.status,
+                refunded_amount=payment.refunded_amount,
+            )
 
         if command.status == "processing":
             payment.mark_processing()
@@ -70,9 +74,17 @@ class ProcessProviderCallbackUseCase:
                     payment_id=str(fresh.id),
                     status=command.status,
                 )
-                return GetPaymentStatusOutputDTO(payment_id=fresh.id, status=fresh.status)
+                return GetPaymentStatusOutputDTO(
+                    payment_id=fresh.id,
+                    status=fresh.status,
+                    refunded_amount=fresh.refunded_amount,
+                )
             raise InvalidPaymentStatusTransitionError(
                 from_status=fresh.status, to_status=target
             ) from stale
         logger.info("callback_applied", payment_id=str(payment.id), status=payment.status.value)
-        return GetPaymentStatusOutputDTO(payment_id=payment.id, status=payment.status)
+        return GetPaymentStatusOutputDTO(
+            payment_id=payment.id,
+            status=payment.status,
+            refunded_amount=payment.refunded_amount,
+        )

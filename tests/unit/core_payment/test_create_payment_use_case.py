@@ -5,6 +5,7 @@ from src.contexts.core_payment.application.dto.payment import CreatePaymentInput
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
 from src.contexts.core_payment.domain.exceptions import UnknownProviderError
 from src.contexts.core_payment.domain.payment import Payment
+from src.contexts.core_payment.domain.refund import Refund
 from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.contexts.core_payment.infrastructure.providers.base import (
     FAKE_PROVIDER_ID,
@@ -69,6 +70,9 @@ async def test_commits_txn1_before_calling_provider() -> None:
 
         async def initiate_payment(self, payment: Payment) -> None:
             self.commits_seen = session.commits
+
+        async def initiate_refund(self, refund: Refund) -> None:
+            raise NotImplementedError  # payments only in this test
 
     provider = _CommitTrackingProvider()
     use_case = _make_use_case(repo, provider, session)
