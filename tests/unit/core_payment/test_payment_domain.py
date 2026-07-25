@@ -29,6 +29,7 @@ def test_payment_is_created_with_given_fields() -> None:
     assert payment.status is PaymentStatuses.CREATED
     assert payment.amount == Decimal("100.00")
     assert payment.metadata is None
+    assert payment.refunded_amount == Decimal("0")
 
 
 # --- Status transitions (happy path) ---
