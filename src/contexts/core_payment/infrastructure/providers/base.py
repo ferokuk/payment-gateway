@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import StrEnum
 
 from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.domain.refund import Refund
+from src.contexts.core_payment.domain.statuses import RefundFailureReasons
 
 # The only known provider; an "id -> provider" registry will appear
 # together with the second provider.
@@ -25,6 +28,24 @@ class ProviderRejectedError(ProviderInitiationError):
     """
 
 
+class RefundProviderState(StrEnum):
+    """What the provider says about a refund when asked directly."""
+
+    # Definitive: nothing was taken, so the reserved amount can go back.
+    ABSENT = "absent"
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    # The provider could not be reached or would not say. Not an answer.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class RefundProviderStatus:
+    state: RefundProviderState
+    failure_reason: RefundFailureReasons | None = None
+
+
 class PaymentProvider(ABC):
     @abstractmethod
     async def initiate_payment(self, payment: Payment) -> None: ...
@@ -37,4 +58,17 @@ class PaymentProvider(ABC):
         deduplication on the provider side a repeat would send the payer their
         money a second time. For a real PSP that means passing refund.id as the
         provider's own idempotency key.
+        """
+
+    @abstractmethod
+    async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
+        """The provider's own view of the refund, whatever we believe locally.
+
+        The only way out for a refund whose outcome we never learned: a lost
+        callback leaves it in PENDING forever, and an ERROR callback says the
+        provider itself did not know at the time.
+
+        Implementations MUST NOT raise on transport failures — an unreachable
+        provider is UNKNOWN, which reads as "ask again later" and is the same
+        instruction the caller would derive from an exception anyway.
         """

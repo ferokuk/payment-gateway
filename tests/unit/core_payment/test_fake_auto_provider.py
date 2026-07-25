@@ -8,12 +8,19 @@ import httpx
 import pytest
 from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.domain.refund import Refund
-from src.contexts.core_payment.domain.statuses import PaymentStatuses, RefundStatuses
+from src.contexts.core_payment.domain.statuses import (
+    PaymentStatuses,
+    RefundFailureReasons,
+    RefundStatuses,
+)
 from src.contexts.core_payment.infrastructure.providers.base import (
     ProviderInitiationError,
     ProviderRejectedError,
+    RefundProviderState,
 )
 from src.contexts.core_payment.infrastructure.providers.fake_auto import (
+    _REFUND_SCENARIOS,
+    _REFUND_TRUTH,
     AutoCallbackFakePaymentProvider,
 )
 from tests.fixtures.payment import make_payment
@@ -225,6 +232,65 @@ async def test_refused_refund_initiation_is_a_definitive_rejection(scenario: str
     async with _make_provider(recorded) as provider:
         with pytest.raises(ProviderRejectedError):
             await provider.initiate_refund(_refund_with_scenario(scenario))
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_state", "expected_reason"),
+    [
+        ("success", RefundProviderState.SUCCEEDED, None),
+        ("card_unavailable", RefundProviderState.FAILED, RefundFailureReasons.CARD_UNAVAILABLE),
+        ("timeout", RefundProviderState.FAILED, RefundFailureReasons.TIMEOUT),
+        # The callback for this scenario said "internal error, outcome unknown",
+        # yet the operation itself settled — the gap reconciliation closes.
+        ("error", RefundProviderState.FAILED, RefundFailureReasons.TIMEOUT),
+    ],
+)
+@pytest.mark.anyio
+async def test_status_query_reveals_the_settled_outcome(
+    scenario: str,
+    expected_state: RefundProviderState,
+    expected_reason: RefundFailureReasons | None,
+) -> None:
+    recorded: list[httpx.Request] = []
+    refund = _refund_with_scenario(scenario)
+
+    async with _make_provider(recorded) as provider:
+        await _initiate_refund_and_wait(provider, refund)
+        status = await provider.get_refund_status(refund)
+
+    assert status.state is expected_state
+    assert status.failure_reason is expected_reason
+
+
+def test_every_refund_scenario_has_a_settled_truth() -> None:
+    # Initiation looks the truth up by the same key it validated the scenario
+    # with, so a scenario without an entry would be a KeyError at runtime.
+    assert set(_REFUND_TRUTH) == set(_REFUND_SCENARIOS)
+
+
+@pytest.mark.anyio
+async def test_status_query_reports_unseen_refund_as_absent() -> None:
+    recorded: list[httpx.Request] = []
+
+    async with _make_provider(recorded) as provider:
+        status = await provider.get_refund_status(_refund_with_scenario("success"))
+
+    assert status.state is RefundProviderState.ABSENT
+
+
+@pytest.mark.anyio
+async def test_status_query_reconstructs_the_outcome_for_another_process() -> None:
+    # The reconciler runs in its own process with a blank provider instance;
+    # a refund that left created was accepted, so it must not be denied.
+    recorded: list[httpx.Request] = []
+    accepted = _refund_with_scenario("card_unavailable")
+    accepted.status = RefundStatuses.PENDING
+
+    async with _make_provider(recorded) as provider:
+        status = await provider.get_refund_status(accepted)
+
+    assert status.state is RefundProviderState.FAILED
+    assert status.failure_reason is RefundFailureReasons.CARD_UNAVAILABLE
 
 
 @pytest.mark.anyio
