@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from httpx import AsyncClient
 from src.contexts.core_payment.domain.statuses import PaymentStatuses
@@ -24,7 +26,10 @@ async def test_callback_applies_transition_and_returns_200(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"payment_id": str(payment.id), "status": "processing"}
+    body = response.json()
+    assert body["payment_id"] == str(payment.id)
+    assert body["status"] == "processing"
+    assert Decimal(body["refunded_amount"]) == Decimal("0")
     stored = await fake_repo.get_by_id(payment.id)
     assert stored is not None
     assert stored.status is PaymentStatuses.PROCESSING

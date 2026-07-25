@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyIdempotencyKeyRepository,
     SQLAlchemyPaymentRepository,
+    SQLAlchemyRefundIdempotencyKeyRepository,
+    SQLAlchemyRefundRepository,
 )
 from src.shared.config import Settings, settings
 from src.shared.database.engine import create_engine, create_sessionmaker
@@ -65,3 +67,13 @@ class RepositoriesProvider(Provider):
         self, session: AsyncSession
     ) -> SQLAlchemyIdempotencyKeyRepository:
         return SQLAlchemyIdempotencyKeyRepository(session)
+
+    @provide
+    def get_refund_repository(self, session: AsyncSession) -> SQLAlchemyRefundRepository:
+        return SQLAlchemyRefundRepository(session)
+
+    @provide
+    def get_refund_idempotency_key_repository(
+        self, session: AsyncSession
+    ) -> SQLAlchemyRefundIdempotencyKeyRepository:
+        return SQLAlchemyRefundIdempotencyKeyRepository(session)

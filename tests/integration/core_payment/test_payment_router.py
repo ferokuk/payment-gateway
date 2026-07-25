@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -9,6 +10,7 @@ from tests.fixtures.client import API_KEY, make_client
 from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
 from tests.fixtures.payment import FakePaymentRepository, make_payment
 from tests.fixtures.providers import RecordingFakeProvider
+from tests.fixtures.refund import FakeRefundIdempotencyKeyRepository, FakeRefundRepository
 from tests.fixtures.session import FakeSession
 
 
@@ -28,6 +30,7 @@ async def test_get_payment_returns_200_with_status_when_payment_exists(
     body = response.json()
     assert body["payment_id"] == str(payment.id)
     assert body["status"] == "processing"
+    assert Decimal(body["refunded_amount"]) == Decimal("0")
 
 
 @pytest.mark.anyio
@@ -155,10 +158,19 @@ async def test_create_payment_returns_422_for_unknown_provider_id(client: AsyncC
 async def test_create_payment_returns_502_when_provider_unavailable(
     fake_repo: FakePaymentRepository,
     fake_key_repo: FakeIdempotencyKeyRepository,
+    fake_refund_repo: FakeRefundRepository,
+    fake_refund_key_repo: FakeRefundIdempotencyKeyRepository,
     fake_session: FakeSession,
 ) -> None:
     failing_provider = RecordingFakeProvider(error=ProviderInitiationError("down"))
-    async with make_client(fake_repo, fake_key_repo, fake_session, failing_provider) as client:
+    async with make_client(
+        fake_repo,
+        fake_key_repo,
+        fake_refund_repo,
+        fake_refund_key_repo,
+        fake_session,
+        failing_provider,
+    ) as client:
         response = await client.post(
             "/payments", json=_valid_create_payload(), headers={"X-API-Key": API_KEY}
         )

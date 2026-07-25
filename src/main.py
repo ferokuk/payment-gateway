@@ -13,6 +13,7 @@ from src.contexts.core_payment.presentation.routers.callbacks import (
     router as callbacks_router,
 )
 from src.contexts.core_payment.presentation.routers.payment import router as payment_router
+from src.contexts.core_payment.presentation.routers.refund import router as refund_router
 from src.shared.config import settings
 from src.shared.ioc import ConfigProvider, DatabaseProvider, RepositoriesProvider
 from src.shared.logging import configure_logging
@@ -31,6 +32,7 @@ app = FastAPI(title="Payment Gateway", lifespan=lifespan)
 
 app.include_router(payment_router)
 app.include_router(callbacks_router)
+app.include_router(refund_router)
 
 container = make_async_container(
     ConfigProvider(),
