@@ -1,5 +1,5 @@
 import pytest
-from src.contexts.core_payment.domain.statuses import PaymentStatuses
+from src.contexts.core_payment.domain.statuses import PaymentStatuses, RefundStatuses
 from src.contexts.core_payment.infrastructure.providers.base import (
     FAKE_PROVIDER_ID,
     PaymentProvider,
@@ -8,6 +8,7 @@ from src.contexts.core_payment.infrastructure.providers.fake_manual import (
     ManualFakePaymentProvider,
 )
 from tests.fixtures.payment import make_payment
+from tests.fixtures.refund import make_refund
 
 
 def test_fake_provider_id_is_one() -> None:
@@ -53,3 +54,13 @@ async def test_di_selects_provider_by_mode() -> None:
 
     assert isinstance(manual, ManualFakePaymentProvider)
     assert isinstance(auto, AutoCallbackFakePaymentProvider)
+
+
+@pytest.mark.anyio
+async def test_manual_provider_accepts_refund_without_side_effects() -> None:
+    provider = ManualFakePaymentProvider()
+    refund = make_refund(status=RefundStatuses.CREATED)
+
+    await provider.initiate_refund(refund)
+
+    assert refund.status is RefundStatuses.CREATED

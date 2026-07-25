@@ -30,3 +30,4 @@ class CreatePaymentOutputDTO(BaseModel):
 class GetPaymentStatusOutputDTO(BaseModel):
     payment_id: UUID7 = Field(description="ID of the created payment")
     status: PaymentStatuses = Field(description="Current payment status")
+    refunded_amount: Decimal = Field(description="Amount reserved or refunded")

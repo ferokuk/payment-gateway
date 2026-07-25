@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
 from tests.fixtures.payment import FakePaymentRepository
+from tests.fixtures.refund import FakeRefundIdempotencyKeyRepository, FakeRefundRepository
 
 
 class _FakeSavepoint:
@@ -38,10 +39,16 @@ class FakeSession:
 
     def __init__(self, *stores: dict[Any, Any]) -> None:
         self.commits = 0
+        self.rollbacks = 0
         self._stores = stores
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def rollback(self) -> None:
+        # Counted, not emulated: the fake repositories hand out copies, so an
+        # uncommitted domain mutation never reached the store in the first place.
+        self.rollbacks += 1
 
     async def flush(self) -> None:
         """Fake repositories write to dicts immediately — flush has nothing to do."""
@@ -52,6 +59,14 @@ class FakeSession:
 
 @pytest.fixture
 def fake_session(
-    fake_repo: FakePaymentRepository, fake_key_repo: FakeIdempotencyKeyRepository
+    fake_repo: FakePaymentRepository,
+    fake_key_repo: FakeIdempotencyKeyRepository,
+    fake_refund_repo: FakeRefundRepository,
+    fake_refund_key_repo: FakeRefundIdempotencyKeyRepository,
 ) -> FakeSession:
-    return FakeSession(fake_repo._payments, fake_key_repo._records)
+    return FakeSession(
+        fake_repo._payments,
+        fake_key_repo._records,
+        fake_refund_repo._refunds,
+        fake_refund_key_repo._records,
+    )

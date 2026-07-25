@@ -39,6 +39,23 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  reconciler:
+    build: .
+    container_name: payment_gateway_reconciler
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Callbacks of the auto provider must reach the API, and "localhost" here
+      # is this container, which serves no HTTP.
+      SELF_BASE_URL: http://app:8000
+    command: ["python", "-m", "src.reconciler"]
+    depends_on:
+      database:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 
 volumes:
   postgres_data:

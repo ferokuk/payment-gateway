@@ -25,4 +25,5 @@ class GetPaymentStatusUseCase:
         return GetPaymentStatusOutputDTO(
             payment_id=payment.id,
             status=payment.status,
+            refunded_amount=payment.refunded_amount,
         )

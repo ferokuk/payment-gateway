@@ -29,3 +29,4 @@ class PaymentStatusResponse(BaseModel):
 
     payment_id: UUID = Field(description="Payment ID")
     status: PaymentStatuses = Field(description="Current payment status")
+    refunded_amount: Decimal = Field(description="Amount reserved or refunded")

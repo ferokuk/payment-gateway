@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from src.contexts.core_payment.application.use_cases.get_payment_status import (
     GetPaymentStatusUseCase,
@@ -19,6 +21,7 @@ async def test_returns_dto_with_payment_status_when_payment_exists() -> None:
 
     assert result.payment_id == payment.id
     assert result.status is PaymentStatuses.PROCESSING
+    assert result.refunded_amount == Decimal("0")
 
 
 @pytest.mark.anyio

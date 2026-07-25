@@ -20,6 +20,7 @@ configure_logging(json_logs=True)
 pytest_plugins = [
     "tests.fixtures.payment",
     "tests.fixtures.idempotency",
+    "tests.fixtures.refund",
     "tests.fixtures.session",
     "tests.fixtures.client",
 ]

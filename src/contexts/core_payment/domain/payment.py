@@ -21,6 +21,10 @@ class Payment(BaseModel):
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary merchant data")
     failure_reason: FailureReasons | None = Field(default=None, description="Failure reason")
     error_message: str | None = Field(default=None, description="Error message")
+    refunded_amount: Decimal = Field(
+        default=Decimal("0"),
+        description="Amount reserved or refunded across this payment's refunds",
+    )
 
     def mark_pending(self) -> None:
         if PaymentStatuses.PENDING not in _ALLOWED_TRANSITIONS[self.status]:

@@ -24,6 +24,24 @@ class Settings(BaseSettings):
     fake_callback_delay_seconds: float = Field(
         default=1.0, gt=0, description="Delay before each callback of the auto provider"
     )
+    reconcile_interval_seconds: float = Field(
+        default=60.0, gt=0, description="Pause between reconciliation passes"
+    )
+    reconcile_stuck_after_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description="Age at which a refund still in created counts as stuck",
+    )
+    # 20 hours: safely inside the ~24 hours a PSP keeps an idempotency key.
+    # Past that a repeat is no longer deduplicated and would refund twice.
+    reconcile_give_up_after_seconds: float = Field(
+        default=72000.0,
+        gt=0,
+        description="Age past which a stuck refund is only reported, never re-initiated",
+    )
+    reconcile_batch_size: int = Field(
+        default=100, gt=0, description="Stuck refunds handled per reconciliation pass"
+    )
 
 
 settings = Settings()

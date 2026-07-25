@@ -1,19 +1,35 @@
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import httpx
 from dishka import Provider, Scope, provide
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contexts.core_payment.application.use_cases.create_payment import CreatePaymentUseCase
+from src.contexts.core_payment.application.use_cases.create_refund import CreateRefundUseCase
 from src.contexts.core_payment.application.use_cases.get_payment_status import (
     GetPaymentStatusUseCase,
+)
+from src.contexts.core_payment.application.use_cases.get_refund_status import (
+    GetRefundStatusUseCase,
+)
+from src.contexts.core_payment.application.use_cases.list_payment_refunds import (
+    ListPaymentRefundsUseCase,
 )
 from src.contexts.core_payment.application.use_cases.process_provider_callback import (
     ProcessProviderCallbackUseCase,
 )
+from src.contexts.core_payment.application.use_cases.process_refund_callback import (
+    ProcessRefundCallbackUseCase,
+)
+from src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds import (
+    ReconcileStuckRefundsUseCase,
+)
 from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyIdempotencyKeyRepository,
     SQLAlchemyPaymentRepository,
+    SQLAlchemyRefundIdempotencyKeyRepository,
+    SQLAlchemyRefundRepository,
 )
 from src.contexts.core_payment.infrastructure.providers.base import PaymentProvider
 from src.contexts.core_payment.infrastructure.providers.fake_auto import (
@@ -44,6 +60,7 @@ class PaymentProviderProvider(Provider):
             return AutoCallbackFakePaymentProvider(
                 http_client=http_client,
                 callback_url=f"{settings.self_base_url}/callbacks/payments",
+                refund_callback_url=f"{settings.self_base_url}/callbacks/refunds",
                 callback_secret=settings.callback_secret,
                 delay_seconds=settings.fake_callback_delay_seconds,
             )
@@ -78,3 +95,62 @@ class CorePaymentProvider(Provider):
         payment_repository: SQLAlchemyPaymentRepository,
     ) -> ProcessProviderCallbackUseCase:
         return ProcessProviderCallbackUseCase(payment_repository)
+
+    @provide
+    def get_create_refund_use_case(
+        self,
+        payment_repository: SQLAlchemyPaymentRepository,
+        refund_repository: SQLAlchemyRefundRepository,
+        refund_idempotency_repository: SQLAlchemyRefundIdempotencyKeyRepository,
+        payment_provider: PaymentProvider,
+        session: AsyncSession,
+    ) -> CreateRefundUseCase:
+        return CreateRefundUseCase(
+            payment_repository,
+            refund_repository,
+            refund_idempotency_repository,
+            payment_provider,
+            session,
+        )
+
+    @provide
+    def get_list_payment_refunds_use_case(
+        self,
+        payment_repository: SQLAlchemyPaymentRepository,
+        refund_repository: SQLAlchemyRefundRepository,
+    ) -> ListPaymentRefundsUseCase:
+        return ListPaymentRefundsUseCase(payment_repository, refund_repository)
+
+    @provide
+    def get_refund_status_use_case(
+        self,
+        refund_repository: SQLAlchemyRefundRepository,
+    ) -> GetRefundStatusUseCase:
+        return GetRefundStatusUseCase(refund_repository)
+
+    @provide
+    def get_reconcile_stuck_refunds_use_case(
+        self,
+        refund_repository: SQLAlchemyRefundRepository,
+        payment_repository: SQLAlchemyPaymentRepository,
+        payment_provider: PaymentProvider,
+        session: AsyncSession,
+        settings: Settings,
+    ) -> ReconcileStuckRefundsUseCase:
+        return ReconcileStuckRefundsUseCase(
+            refund_repository,
+            payment_repository,
+            payment_provider,
+            session,
+            stuck_after=timedelta(seconds=settings.reconcile_stuck_after_seconds),
+            give_up_after=timedelta(seconds=settings.reconcile_give_up_after_seconds),
+            batch_size=settings.reconcile_batch_size,
+        )
+
+    @provide
+    def get_process_refund_callback_use_case(
+        self,
+        refund_repository: SQLAlchemyRefundRepository,
+        payment_repository: SQLAlchemyPaymentRepository,
+    ) -> ProcessRefundCallbackUseCase:
+        return ProcessRefundCallbackUseCase(refund_repository, payment_repository)
