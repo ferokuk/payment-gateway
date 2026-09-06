@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from pydantic import UUID7, BaseModel, Field
 
@@ -14,6 +15,7 @@ from src.contexts.core_payment.domain.statuses import RefundFailureReasons, Refu
 
 class Refund(BaseModel):
     id: UUID7 = Field(description="ID of the refund")
+    merchant_id: UUID = Field(frozen=True, description="Merchant that owns the refund")
     payment_id: UUID7 = Field(description="ID of the refunded payment")
     amount: Decimal = Field(description="Refund amount")
     status: RefundStatuses = Field(description="Current refund status")

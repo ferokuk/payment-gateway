@@ -31,7 +31,7 @@ from src.contexts.core_payment.infrastructure.providers.base import (
     PaymentProvider,
     ProviderInitiationError,
 )
-from src.contexts.core_payment.ioc import CorePaymentProvider
+from src.contexts.core_payment.ioc import CorePaymentProvider, SystemCorePaymentProvider
 from src.contexts.core_payment.presentation.routers.callbacks import (
     router as callbacks_router,
 )
@@ -39,9 +39,9 @@ from src.contexts.core_payment.presentation.routers.payment import router as pay
 from src.shared.config import Settings
 from src.shared.database.database import Base
 from src.shared.database.engine import create_engine, create_sessionmaker
-from src.shared.ioc import DatabaseProvider, RepositoriesProvider
-from src.shared.security import AuthProvider
+from src.shared.ioc import DatabaseProvider, RepositoriesProvider, SystemRepositoriesProvider
 from tests.fixtures.client import API_KEY, CALLBACK_SECRET, FakePaymentProviderProvider
+from tests.fixtures.merchants import MERCHANT_ID, LocalMerchantAuthProvider, seed_legacy_merchant
 from tests.fixtures.providers import RecordingFakeProvider
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -72,6 +72,7 @@ async def _tables() -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await seed_legacy_merchant(conn)
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -87,9 +88,11 @@ async def _db_client(payment_provider: PaymentProvider) -> AsyncIterator[AsyncCl
         _DbConfigProvider(),
         DatabaseProvider(),
         RepositoriesProvider(),
+        SystemRepositoriesProvider(),
         FakePaymentProviderProvider(payment_provider),
         CorePaymentProvider(),
-        AuthProvider(),
+        SystemCorePaymentProvider(),
+        LocalMerchantAuthProvider(),
         FastapiProvider(),
     )
     setup_dishka(container, app)
@@ -190,7 +193,7 @@ async def test_stale_transition_does_not_regress_committed_status(_tables: None)
     engine = create_engine(TEST_DATABASE_URL)
     maker = create_sessionmaker(engine)
     async with maker() as session:
-        repo = SQLAlchemyPaymentRepository(session)
+        repo = SQLAlchemyPaymentRepository(session, MERCHANT_ID)
         stale = await repo.get_by_id(UUID(payment_id))
         assert stale is not None
         # Simulate a stale snapshot: the competitor "remembers" the payment in CREATED.

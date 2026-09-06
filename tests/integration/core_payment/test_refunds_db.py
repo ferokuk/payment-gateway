@@ -47,7 +47,7 @@ from src.contexts.core_payment.infrastructure.providers.base import (
     RefundProviderState,
     RefundProviderStatus,
 )
-from src.contexts.core_payment.ioc import CorePaymentProvider
+from src.contexts.core_payment.ioc import CorePaymentProvider, SystemCorePaymentProvider
 from src.contexts.core_payment.presentation.routers.callbacks import (
     router as callbacks_router,
 )
@@ -56,9 +56,9 @@ from src.contexts.core_payment.presentation.routers.refund import router as refu
 from src.shared.config import Settings
 from src.shared.database.database import Base
 from src.shared.database.engine import create_engine, create_sessionmaker
-from src.shared.ioc import DatabaseProvider, RepositoriesProvider
-from src.shared.security import AuthProvider
+from src.shared.ioc import DatabaseProvider, RepositoriesProvider, SystemRepositoriesProvider
 from tests.fixtures.client import API_KEY, CALLBACK_SECRET, FakePaymentProviderProvider
+from tests.fixtures.merchants import MERCHANT_ID, LocalMerchantAuthProvider, seed_legacy_merchant
 from tests.fixtures.providers import RecordingFakeProvider
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -89,6 +89,7 @@ async def _tables() -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await seed_legacy_merchant(conn)
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -105,9 +106,11 @@ async def _db_client(provider: PaymentProvider | None = None) -> AsyncIterator[A
         _DbConfigProvider(),
         DatabaseProvider(),
         RepositoriesProvider(),
+        SystemRepositoriesProvider(),
         FakePaymentProviderProvider(provider if provider is not None else RecordingFakeProvider()),
         CorePaymentProvider(),
-        AuthProvider(),
+        SystemCorePaymentProvider(),
+        LocalMerchantAuthProvider(),
         FastapiProvider(),
     )
     setup_dishka(container, app)
@@ -252,7 +255,7 @@ async def test_list_unresolved_sees_only_old_open_refunds(_tables: None) -> None
     engine = create_engine(TEST_DATABASE_URL)
     maker = create_sessionmaker(engine)
     async with maker() as session:
-        repo = SQLAlchemyRefundRepository(session)
+        repo = SQLAlchemyRefundRepository(session, MERCHANT_ID)
         too_young = await repo.list_unresolved(
             statuses=UNRESOLVED_STATUSES,
             created_before=now - timedelta(minutes=15),
@@ -282,8 +285,8 @@ async def _reconcile(provider: PaymentProvider, *, batch_size: int = 10) -> Reco
     maker = create_sessionmaker(engine)
     async with maker() as session:
         use_case = ReconcileStuckRefundsUseCase(
-            SQLAlchemyRefundRepository(session),
-            SQLAlchemyPaymentRepository(session),
+            SQLAlchemyRefundRepository(session, MERCHANT_ID),
+            SQLAlchemyPaymentRepository(session, MERCHANT_ID),
             provider,
             session,
             stuck_after=timedelta(seconds=0),
@@ -359,9 +362,9 @@ async def test_api_and_worker_share_initiation_window_and_release_only_after_abs
     container = make_async_container(
         _DbConfigProvider(),
         DatabaseProvider(),
-        RepositoriesProvider(),
+        SystemRepositoriesProvider(),
         FakePaymentProviderProvider(provider),
-        CorePaymentProvider(),
+        SystemCorePaymentProvider(),
     )
     try:
         async with container() as scope:
@@ -581,7 +584,7 @@ async def test_concurrent_schedule_claim_has_one_winner(_tables: None) -> None:
     now = datetime.now(UTC)
     try:
         async with maker() as session:
-            candidates = await SQLAlchemyRefundRepository(session).list_unresolved(
+            candidates = await SQLAlchemyRefundRepository(session, MERCHANT_ID).list_unresolved(
                 statuses=UNRESOLVED_STATUSES, created_before=now, due_before=now, limit=1
             )
         candidate = candidates[0]
@@ -590,7 +593,7 @@ async def test_concurrent_schedule_claim_has_one_winner(_tables: None) -> None:
         async def claim() -> None:
             async with maker.begin() as session:
                 results.append(
-                    await SQLAlchemyRefundRepository(session).schedule_reconciliation(
+                    await SQLAlchemyRefundRepository(session, MERCHANT_ID).schedule_reconciliation(
                         candidate, next_check_at=now + timedelta(minutes=1)
                     )
                 )
@@ -745,7 +748,9 @@ async def test_concurrent_replays_after_reconciliation_restore_one_response(
             await replay()
             assert responses[-1].json() == body
         async with create_sessionmaker(engine)() as session:
-            record = await session.get(RefundIdempotencyKeyModel, "reconciled-refund")
+            record = await session.get(
+                RefundIdempotencyKeyModel, (MERCHANT_ID, "reconciled-refund")
+            )
             assert record is not None and record.response_body == body
         assert await _refunded_amount(payment_id) == Decimal(reserved)
         assert len(await _refund_statuses()) == 1
@@ -781,7 +786,9 @@ async def test_competing_snapshots_return_the_first_committed_response(
                 await session.execute(
                     text("UPDATE refund_idempotency_keys SET response_body = NULL")
                 )
-            record = await session.get(RefundIdempotencyKeyModel, "competing-snapshots")
+            record = await session.get(
+                RefundIdempotencyKeyModel, (MERCHANT_ID, "competing-snapshots")
+            )
             assert record is not None
             refund_id = str(record.refund_id)
         snapshots = [
@@ -800,7 +807,7 @@ async def test_competing_snapshots_return_the_first_committed_response(
         async def write_snapshot(body: dict[str, Any]) -> None:
             nonlocal ready
             async with maker.begin() as session:
-                repo = SQLAlchemyRefundIdempotencyKeyRepository(session)
+                repo = SQLAlchemyRefundIdempotencyKeyRepository(session, MERCHANT_ID)
                 original = await repo.get("competing-snapshots")
                 assert original is not None and original.response_body is None
                 ready += 1
@@ -816,7 +823,9 @@ async def test_competing_snapshots_return_the_first_committed_response(
         assert observed[0] == observed[1]
         assert observed[0] in snapshots
         async with maker() as session:
-            record = await session.get(RefundIdempotencyKeyModel, "competing-snapshots")
+            record = await session.get(
+                RefundIdempotencyKeyModel, (MERCHANT_ID, "competing-snapshots")
+            )
             assert record is not None and record.response_body == observed[0]
         assert await _refunded_amount(payment_id) == Decimal("40.00")
     finally:
@@ -887,7 +896,7 @@ async def test_stale_refund_transition_does_not_regress(_tables: None) -> None:
     engine = create_engine(TEST_DATABASE_URL)
     maker = create_sessionmaker(engine)
     async with maker() as session:
-        repo = SQLAlchemyRefundRepository(session)
+        repo = SQLAlchemyRefundRepository(session, MERCHANT_ID)
         stale = await repo.get_by_id(UUID(refund_id))
         assert stale is not None
         # Simulate a stale snapshot: the competitor "remembers" the refund in CREATED.

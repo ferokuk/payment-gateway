@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from pydantic import UUID7, BaseModel, Field
 
@@ -13,6 +14,7 @@ from src.contexts.core_payment.domain.statuses import FailureReasons, PaymentSta
 
 class Payment(BaseModel):
     id: UUID7 = Field(description="ID of the created payment")
+    merchant_id: UUID = Field(frozen=True, description="Merchant that owns the payment")
     provider_id: int = Field(gt=0, description="Provider ID")
     status: PaymentStatuses = Field(description="Current payment status")
     amount: Decimal = Field(description="Payment amount")

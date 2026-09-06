@@ -5,10 +5,13 @@ from src.contexts.core_payment.infrastructure.database.repositories import (
 )
 from src.shared.ids import new_uuid
 from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
+from tests.fixtures.merchants import MERCHANT_ID
 
 
 def _record(key: str = "abc") -> IdempotencyRecord:
-    return IdempotencyRecord(key=key, request_hash="0" * 64, payment_id=new_uuid())
+    return IdempotencyRecord(
+        merchant_id=MERCHANT_ID, key=key, request_hash="0" * 64, payment_id=new_uuid()
+    )
 
 
 @pytest.mark.anyio

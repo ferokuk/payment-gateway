@@ -12,24 +12,34 @@ from src.contexts.core_payment.domain.exceptions import (
 from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.shared.ids import new_uuid
+from tests.fixtures.merchants import MERCHANT_ID
 
 
 class FakePaymentRepository:
-    def __init__(self) -> None:
+    def __init__(self, merchant_id: UUID = MERCHANT_ID) -> None:
+        self.merchant_id = merchant_id
         self._payments: dict[UUID, Payment] = {}
 
     async def add(self, payment: Payment) -> None:
+        if payment.merchant_id != self.merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
         # Copy so the store is an honest boundary: outside mutations of the
         # object must not leak into the "DB" without an update call.
         self._payments[payment.id] = payment.model_copy(deep=True)
 
     async def get_by_id(self, payment_id: UUID) -> Payment | None:
         stored = self._payments.get(payment_id)
-        return stored.model_copy(deep=True) if stored else None
+        return (
+            stored.model_copy(deep=True)
+            if stored and stored.merchant_id == self.merchant_id
+            else None
+        )
 
     async def update(self, payment: Payment, *, expected_status: PaymentStatuses) -> None:
+        if payment.merchant_id != self.merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
         stored = self._payments.get(payment.id)
-        if stored is None:
+        if stored is None or stored.merchant_id != self.merchant_id:
             raise PaymentNotFoundError
         if stored.status is not expected_status:
             raise StalePaymentStateError(payment.id, expected_status)
@@ -37,7 +47,7 @@ class FakePaymentRepository:
 
     async def reserve_refund_amount(self, payment_id: UUID, amount: Decimal) -> None:
         stored = self._payments.get(payment_id)
-        if stored is None:
+        if stored is None or stored.merchant_id != self.merchant_id:
             raise PaymentNotFoundError
         if stored.status is not PaymentStatuses.SUCCESS:
             raise PaymentNotRefundableError(payment_id, stored.status)
@@ -49,7 +59,7 @@ class FakePaymentRepository:
 
     async def release_refund_amount(self, payment_id: UUID, amount: Decimal) -> None:
         stored = self._payments.get(payment_id)
-        if stored is None:
+        if stored is None or stored.merchant_id != self.merchant_id:
             raise PaymentNotFoundError
         if stored.refunded_amount - amount < 0:
             raise LookupError(
@@ -62,6 +72,7 @@ class FakePaymentRepository:
 
 def make_payment(status: PaymentStatuses = PaymentStatuses.PENDING) -> Payment:
     return Payment(
+        merchant_id=MERCHANT_ID,
         id=new_uuid(),
         provider_id=1,
         status=status,

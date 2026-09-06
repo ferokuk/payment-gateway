@@ -79,6 +79,10 @@ class CreateRefundUseCase:
         command: CreateRefundInputDTO,
         idempotency_key: str | None = None,
     ) -> CreateRefundOutputDTO:
+        # Check visibility before reading an idempotency snapshot: a known key
+        # must not turn a foreign payment path into a successful response.
+        if await self._payment_repository.get_by_id(command.payment_id) is None:
+            raise PaymentNotFoundError
         if idempotency_key is None:
             refund = await self._reserve_and_add(command)
             return await self._initiate_and_finalize(refund, idempotency_key=None)
@@ -96,6 +100,7 @@ class CreateRefundUseCase:
                     await self._session.flush()
                     await self._idempotency_repository.add(
                         RefundIdempotencyRecord(
+                            merchant_id=refund.merchant_id,
                             key=idempotency_key,
                             request_hash=_request_hash(command),
                             refund_id=refund.id,
@@ -132,6 +137,7 @@ class CreateRefundUseCase:
         await self._payment_repository.reserve_refund_amount(command.payment_id, command.amount)
         refund = Refund(
             id=new_uuid(),
+            merchant_id=self._payment_repository.merchant_id,
             payment_id=command.payment_id,
             amount=command.amount,
             status=RefundStatuses.CREATED,
