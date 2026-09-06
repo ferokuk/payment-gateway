@@ -98,7 +98,7 @@ class GatewayConfig:
     callback_secret: str = "local-dev-callback-secret"
     # Only the reconciliation section needs it: that job lives behind the API,
     # not in front of it. The host port comes from docker-compose.
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/payment_gateway"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway"
     # A wave of 1000 requests saturates the service's DB pool: the tail waits
     # noticeably longer than httpx's default 5 seconds.
     timeout_seconds: float = 60.0
@@ -572,7 +572,7 @@ async def run_reconciliation_pass(
             provider,
             session,
             stuck_after=timedelta(seconds=stuck_after_seconds),
-            give_up_after=timedelta(seconds=give_up_after_seconds),
+            initiation_max_age=timedelta(seconds=give_up_after_seconds),
             batch_size=batch_size,
         )
         report = await use_case()

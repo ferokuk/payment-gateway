@@ -1,7 +1,7 @@
 """Refund invariants against a real PostgreSQL.
 
 Run: docker compose up -d database, then
-  $env:TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5433/payment_gateway_test"
+  $env:TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway_test"
   uv run pytest tests/integration/core_payment/test_refunds_db.py -v
 Tables are created and dropped wholesale — the DB must be dedicated to tests.
 """
