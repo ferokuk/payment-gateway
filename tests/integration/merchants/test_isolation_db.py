@@ -60,8 +60,8 @@ from src.shared.database.database import Base
 from src.shared.database.engine import create_engine, create_sessionmaker
 from src.shared.ids import new_uuid
 from src.shared.ioc import DatabaseProvider, RepositoriesProvider, SystemRepositoriesProvider
-from src.shared.security import AuthProvider
 from tests.fixtures.client import CALLBACK_SECRET, FakePaymentProviderProvider
+from tests.fixtures.merchants import LocalMerchantAuthProvider
 from tests.fixtures.providers import RecordingFakeProvider
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -121,7 +121,7 @@ async def _client(provider: RecordingFakeProvider) -> AsyncIterator[AsyncClient]
         SystemRepositoriesProvider(),
         CorePaymentProvider(),
         SystemCorePaymentProvider(),
-        AuthProvider(),
+        LocalMerchantAuthProvider(),
         FakePaymentProviderProvider(provider),
         FastapiProvider(),
     )

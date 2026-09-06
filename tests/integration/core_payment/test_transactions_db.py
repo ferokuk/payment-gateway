@@ -40,9 +40,8 @@ from src.shared.config import Settings
 from src.shared.database.database import Base
 from src.shared.database.engine import create_engine, create_sessionmaker
 from src.shared.ioc import DatabaseProvider, RepositoriesProvider, SystemRepositoriesProvider
-from src.shared.security import AuthProvider
 from tests.fixtures.client import API_KEY, CALLBACK_SECRET, FakePaymentProviderProvider
-from tests.fixtures.merchants import MERCHANT_ID, seed_legacy_merchant
+from tests.fixtures.merchants import MERCHANT_ID, LocalMerchantAuthProvider, seed_legacy_merchant
 from tests.fixtures.providers import RecordingFakeProvider
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -93,7 +92,7 @@ async def _db_client(payment_provider: PaymentProvider) -> AsyncIterator[AsyncCl
         FakePaymentProviderProvider(payment_provider),
         CorePaymentProvider(),
         SystemCorePaymentProvider(),
-        AuthProvider(),
+        LocalMerchantAuthProvider(),
         FastapiProvider(),
     )
     setup_dishka(container, app)

@@ -47,7 +47,7 @@ class SQLAlchemyMerchantRepository:
         result = await self._session.execute(
             select(MerchantAPIKeyModel, MerchantModel.is_active)
             .join(MerchantModel, MerchantModel.id == MerchantAPIKeyModel.merchant_id)
-            .where(MerchantAPIKeyModel.id == key_id)
+            .where(MerchantAPIKeyModel.id == key_id, MerchantModel.deleted_at.is_(None))
             .execution_options(populate_existing=True)
         )
         row = result.one_or_none()
@@ -60,6 +60,7 @@ class SQLAlchemyMerchantRepository:
             .where(
                 MerchantAPIKeyModel.secret_digest == digest,
                 MerchantAPIKeyModel.is_legacy.is_(True),
+                MerchantModel.deleted_at.is_(None),
             )
             .execution_options(populate_existing=True)
         )
@@ -87,7 +88,7 @@ class SQLAlchemyMerchantRepository:
         merchant = await self._session.get(MerchantModel, merchant_id)
         if merchant is None:
             raise ValueError("Merchant not found")
-        if not merchant.is_active:
+        if not merchant.is_active or merchant.deleted_at is not None:
             raise ValueError("Merchant is inactive")
         issued = issue_api_key(merchant_id, _label(label), datetime.now(UTC), expires_at)
         await self._insert_key(issued.key)
@@ -101,7 +102,7 @@ class SQLAlchemyMerchantRepository:
         merchant = await self._session.get(MerchantModel, LEGACY_MERCHANT_ID)
         if merchant is None:
             raise ValueError("Legacy merchant not found; apply the merchant isolation migration")
-        if not merchant.is_active:
+        if not merchant.is_active or merchant.deleted_at is not None:
             raise ValueError("Merchant is inactive")
         exists = await self._session.scalar(
             select(MerchantAPIKeyModel.id).where(MerchantAPIKeyModel.is_legacy.is_(True))
@@ -148,9 +149,10 @@ class SQLAlchemyMerchantRepository:
             raise ValueError("API key not found")
 
     async def set_active(self, merchant_id: UUID, *, active: bool) -> None:
+        # Support closure is permanent; the maintenance CLI must not resurrect accounts.
         result = await self._session.scalar(
             update(MerchantModel)
-            .where(MerchantModel.id == merchant_id)
+            .where(MerchantModel.id == merchant_id, MerchantModel.deleted_at.is_(None))
             .values(is_active=active)
             .returning(MerchantModel.id)
         )

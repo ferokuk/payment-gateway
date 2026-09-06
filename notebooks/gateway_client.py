@@ -91,7 +91,7 @@ def scenario_for(index: int) -> str:
 
 @dataclass(frozen=True)
 class GatewayConfig:
-    """Connection settings. Supply a key issued by the merchant operator CLI."""
+    """Connection settings. Supply the API key returned by Merchant Service registration."""
 
     base_url: str = "http://localhost:8000"
     api_key: str = field(default="", repr=False)

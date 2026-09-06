@@ -1,13 +1,13 @@
 import secrets
+from collections.abc import AsyncIterator
 
 from dishka import Provider, Scope, provide
 from fastapi import HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from httpx import AsyncClient
 
-from src.contexts.merchants.application.authentication import AuthenticateAPIKey
 from src.contexts.merchants.application.public import MerchantIdentity
-from src.contexts.merchants.infrastructure.database.repositories import SQLAlchemyMerchantRepository
 from src.shared.config import Settings
+from src.shared.merchant_client import HTTPMerchantAuthenticator, MerchantServiceUnavailable
 
 Authenticated = MerchantIdentity
 
@@ -19,10 +19,27 @@ class CallbackAuthenticated:
 class AuthProvider(Provider):
     scope = Scope.REQUEST
 
+    @provide(scope=Scope.APP)
+    async def merchant_authenticator(
+        self, settings: Settings
+    ) -> AsyncIterator[HTTPMerchantAuthenticator]:
+        async with AsyncClient(
+            base_url=settings.merchant_service_url, timeout=5.0, follow_redirects=False
+        ) as client:
+            yield HTTPMerchantAuthenticator(client, settings.merchant_service_secret)
+
     @provide
-    async def authenticate(self, request: Request, session: AsyncSession) -> MerchantIdentity:
+    async def authenticate(
+        self, request: Request, authenticator: HTTPMerchantAuthenticator
+    ) -> MerchantIdentity:
         api_key = request.headers.get("X-API-Key")
-        identity = await AuthenticateAPIKey(SQLAlchemyMerchantRepository(session))(api_key)
+        try:
+            identity = await authenticator(api_key)
+        except MerchantServiceUnavailable:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Merchant authentication is unavailable",
+            ) from None
         if identity is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

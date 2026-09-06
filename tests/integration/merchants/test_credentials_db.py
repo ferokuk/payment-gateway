@@ -23,7 +23,7 @@ from src.shared.config import Settings
 from src.shared.database.database import Base
 from src.shared.database.engine import create_engine, create_sessionmaker
 from src.shared.ioc import DatabaseProvider
-from src.shared.security import AuthProvider
+from tests.fixtures.merchants import LocalMerchantAuthProvider
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = [
@@ -68,7 +68,7 @@ async def identity_client(
         return {"merchant_id": str(identity.merchant_id), "api_key_id": str(identity.api_key_id)}
 
     container = make_async_container(
-        _Config(), DatabaseProvider(), AuthProvider(), FastapiProvider()
+        _Config(), DatabaseProvider(), LocalMerchantAuthProvider(), FastapiProvider()
     )
     setup_dishka(container, app)
     try:

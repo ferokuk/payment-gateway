@@ -1,31 +1,130 @@
 # Payment Gateway
 
-Платёжный шлюз с REST API для создания платежей и частичных возвратов.
-Поддерживает идемпотентные операции, обработку callbacks от платёжных провайдеров
-и фоновую сверку статусов.
+Бэкенд платёжного шлюза: платежи, частичные возвраты, идемпотентность,
+callbacks и сверка статусов. **Merchant Service** отвечает за регистрацию,
+авторизацию, личный кабинет через REST API, ключи и настройки мерчантов.
 
-**Стек:** Python 3.14, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Dishka.
+Стек: Python 3.14, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Dishka.
 
-## Целевая архитектура
+## Архитектура
 
 [![Архитектура Payment Gateway](assets/payment-gateway.svg)](assets/payment-gateway.svg)
 
+- Платёжное API — `src/main.py`, порт **8000**.
+- Merchant Service — `src/contexts/merchants/main.py`, отдельный процесс, порт **8001**.
+- Платёжное API проверяет ключи через внутреннее HTTP API Merchant Service.
+- Reconciler продолжает обработку уже принятых возвратов независимо от доступности кабинета.
+
+В текущем Compose сервисы используют существующую PostgreSQL БД: это сохраняет
+данные и внешние ключи платежей. Таблицами учётных записей управляет Merchant;
+платёжное API не обращается к ним для авторизации. Детали и границы реализации —
+[Merchant Service](docs/architecture/merchant-service.md).
+
 ## Запуск
 
-Требования: Docker Compose. Команды — для PowerShell.
+Требования: Docker Compose. Для настройки секретов и локальной разработки —
+Python 3.14+ и [uv](https://docs.astral.sh/uv/). Команды для PowerShell:
 
 ```powershell
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
+uv sync --frozen
+```
+
+Один раз сгенерируйте секреты в `.env`. Команда заполняет только отсутствующие
+или пустые значения и не выводит секреты в терминал:
+
+```powershell
+@'
+import re
+import secrets
+from pathlib import Path
+from cryptography.fernet import Fernet
+
+path = Path('.env')
+content = path.read_text(encoding='utf-8')
+for name in ('MERCHANT_ENCRYPTION_KEY', 'MERCHANT_SERVICE_SECRET', 'MERCHANT_SUPPORT_SECRET'):
+    value = Fernet.generate_key().decode() if name.endswith('ENCRYPTION_KEY') else secrets.token_urlsafe(32)
+    pattern = rf'^{name}=[ \t]*$'
+    if re.search(pattern, content, re.MULTILINE):
+        content = re.sub(pattern, f'{name}={value}', content, flags=re.MULTILINE)
+    elif not re.search(rf'^{name}=', content, re.MULTILINE):
+        content += f'\n{name}={value}\n'
+path.write_text(content, encoding='utf-8')
+'@ | uv run python -
+
 docker compose up --build -d
 ```
 
-API: `http://localhost:8000`. PostgreSQL: `localhost:5432`.
+Сохраните `MERCHANT_ENCRYPTION_KEY` в хранилище секретов: он нужен для расшифровки
+ключей после перезапуска. `MERCHANT_SERVICE_SECRET` используют внутренние сервисы,
+`MERCHANT_SUPPORT_SECRET` — только поддержка. Эти значения не передают мерчантам.
 Конфигурация: [.env.example](.env.example).
-Тестовый провайдер: `provider_id=1`; автоматические callbacks: `FAKE_PROVIDER_MODE=auto`.
 
-## API
+Swagger: [платежи](http://localhost:8000/docs) · [мерчанты](http://localhost:8001/docs).
+PostgreSQL: `localhost:5432`. Тестовый платёжный провайдер: `provider_id=1`;
+автоматические callbacks: `FAKE_PROVIDER_MODE=auto`.
 
-[Swagger](http://localhost:8000/docs) · [OpenAPI](http://localhost:8000/openapi.json)
+## Регистрация и личный кабинет
+
+Кабинет представлен REST API. Вход — по почте и паролю; ИНН/ОГРН не требуются.
+
+| Метод | Эндпоинт Merchant Service | Назначение |
+| --- | --- | --- |
+| POST | `/merchants` | Регистрация и выдача API-ключа |
+| POST | `/auth/token` | Вход по почте и паролю |
+| GET | `/profile` | Профиль, собственный API-ключ и настройки |
+| PATCH | `/profile` | Настройки webhook, повторных уведомлений, имени и провайдера |
+| PATCH | `/profile/secrets` | Ротация API-ключа, ключа провайдера или пароля |
+| DELETE | `/profile?merchant_id=UUID` | Мягкое удаление через поддержку |
+
+Пример тела `POST /merchants`:
+
+```json
+{
+  "email": "owner@example.com",
+  "password": "Replace-with-your-own-password",
+  "name": "My shop",
+  "provider_name": "my-provider",
+  "provider_secret_key": "provider-issued-secret"
+}
+```
+
+Ответ содержит UUID мерчанта, API-ключ и профиль. Для входа отправьте
+`{"email":"owner@example.com","password":"..."}` в `POST /auth/token`.
+Полученный `access_token` передавайте в `Authorization: Bearer ...` при работе
+с профилем. Сессия действует один час по умолчанию; `expires_in` возвращается
+в ответе. API-ключ для платежей и bearer-токен кабинета имеют разное назначение.
+
+`PATCH /profile` принимает только изменяемые поля, например:
+
+```json
+{
+  "webhook_url": "https://shop.example.com/payment-events",
+  "retry_max_attempts": 5,
+  "retry_window_seconds": 300
+}
+```
+
+`webhook_url: null` удаляет адрес. Для смены провайдера передайте вместе
+`provider_name` и `provider_secret_key`; прежний секрет не применяется к новому
+провайдеру автоматически. Merchant хранит и отдаёт настройки внутренним сервисам.
+Доставка webhook и реальные адаптеры провайдеров — отдельные компоненты на схеме;
+текущие fake-провайдеры платежей продолжают работать как прежде.
+
+`PATCH /profile/secrets` поддерживает `rotate_api_key: true`, новый
+`provider_secret_key` и/или новый `password`. Старые API-ключи и версии ключей
+провайдера сохраняют совместимость **24 часа** после ротации. Повторная ротация
+не сокращает срок более ранних ключей. Смена пароля отзывает сессии кабинета.
+
+Профиль показывает текущий API-ключ, но не пароли или секреты провайдера.
+Пароли хранятся как Argon2id-хеши, восстанавливаемые ключи — в зашифрованном виде.
+
+Удаление выполняет поддержка с `X-Support-Secret`. Обычный мерчант не может
+удалить аккаунт этим запросом. Удаление блокирует новые обращения и отзывает
+ключи/сессии, сохраняя финансовую историю. Принятые платежи и возвраты могут
+завершаться через callbacks и reconciler.
+
+## Платёжное API
 
 | Метод | Эндпоинт | Назначение |
 | --- | --- | --- |
@@ -34,94 +133,74 @@ API: `http://localhost:8000`. PostgreSQL: `localhost:5432`.
 | POST | `/payments/{payment_id}/refunds` | Создание возврата |
 | GET | `/payments/{payment_id}/refunds` | Возвраты платежа |
 | GET | `/refunds/{refund_id}` | Статус возврата |
-| POST | `/callbacks/payments` | Обработка результата платежа |
-| POST | `/callbacks/refunds` | Обработка результата возврата |
-| GET | `/health` | Проверка доступности сервиса и БД |
+| POST | `/callbacks/payments` | Результат платежа от провайдера |
+| POST | `/callbacks/refunds` | Результат возврата от провайдера |
+| GET | `/health` | Доступность сервиса и БД |
 
-Авторизация: `X-API-Key` для клиентских запросов, `X-Callback-Secret` для callbacks.
-Идемпотентность создания платежей и возвратов: `Idempotency-Key`.
+Клиентские запросы используют `X-API-Key`, callbacks — `X-Callback-Secret`.
+Идемпотентность создания платежей/возвратов — `Idempotency-Key`.
+Операции изолированы по мерчанту: чужой ID даёт 404, одинаковые ключи
+идемпотентности у разных мерчантов независимы, ротация сохраняет историю повторов.
+Если Merchant Service недоступен, новые клиентские запросы возвращают 503.
 
-Каждый API-ключ принадлежит мерчанту. Платежи, возвраты и ключи идемпотентности
-изолированы по мерчанту; чужой ID возвращает тот же 404, что отсутствующий.
-Одинаковый `Idempotency-Key` у разных мерчантов независим. Несколько API-ключей
-одного мерчанта используют общую историю идемпотентности, в том числе после ротации.
+## Внутреннее API
 
-## Мерчанты и API-ключи
+Оба эндпоинта требуют `X-Service-Secret`:
 
-После миграций создайте мерчанта и выдайте ключ через операторский CLI:
+- `POST /internal/authenticate`, тело `{"api_key":"..."}` — UUID мерчанта и ключа.
+- `GET /internal/merchants/{merchant_id}/configuration` — настройки уведомлений
+  и текущие/ещё действующие предыдущие ключи провайдера для доверенных адаптеров.
 
-```powershell
-docker compose exec app python -m src.contexts.merchants create --name "My shop"
-docker compose exec app python -m src.contexts.merchants issue-key <merchant-uuid> --label "Backend"
-```
+## Миграции существующей установки
 
-Первая команда выводит UUID мерчанта, вторая — API-ключ **один раз** после фиксации
-в БД. Сохраните его в хранилище секретов и передавайте в `X-API-Key`. В БД хранится
-только SHA-256 от ключа; новый ключ содержит 256 случайных бит. Для notebook
-передайте выданный ключ в `GatewayConfig(api_key=...)`.
+Перед обновлением остановите API и workers, сделайте резервную копию и
+настройте новые секреты. Затем:
 
 ```powershell
-docker compose exec app python -m src.contexts.merchants issue-key <merchant-uuid> --label "Rotation" --expires-at "2027-01-01T00:00:00+00:00"
-docker compose exec app python -m src.contexts.merchants revoke-key <key-uuid>
-docker compose exec app python -m src.contexts.merchants deactivate <merchant-uuid>
-docker compose exec app python -m src.contexts.merchants activate <merchant-uuid>
-```
-
-UUID ключа — часть между `pg_` и точкой. Ротация: выдать новый ключ, переключить
-клиента, отозвать прежний. Отзыв необратим; просроченные/отозванные ключи и ключи
-неактивного мерчанта дают 401 на следующем запросе. Уже принятые операции
-продолжают обрабатываться callbacks и reconciler. CLI требует привилегированного
-доступа к БД; публичного API управления мерчантами нет. Не сохраняйте вывод выдачи
-ключей в общедоступных логах; внешний HTTP-доступ должен проходить через TLS.
-
-## Миграции
-
-Миграции применяются при запуске Compose. Отдельный запуск:
-
-```powershell
-docker compose build migrate
-docker compose run --rm migrate
-```
-
-При переходе с глобального ключа остановите API и reconciler, сделайте резервную
-копию, соберите новый образ и примените миграции. Существующие данные получают
-владельца `00000000-0000-4000-8000-000000000001` (legacy merchant), сохраняя суммы,
-статусы и снимки идемпотентности. До запуска новых процессов импортируйте прежний
-ключ через скрытый интерактивный ввод:
-
-```powershell
-docker compose stop app reconciler
+docker compose stop app reconciler merchants
 docker compose build
 docker compose run --rm migrate
-docker compose run --rm --no-deps app python -m src.contexts.merchants import-legacy-key
-docker compose up -d app reconciler
+docker compose up -d merchants app reconciler
 ```
 
-Импорт разрешён один раз и создаёт обычную отзываемую credential-запись для
-legacy merchant. Переменная `API_KEY` больше не авторизует запросы. После импорта
-прежние клиенты могут использовать свой ключ без изменений; затем его следует
-ротировать. Одновременная работа старого и нового кода не поддерживается.
-Downgrade запрещён при новых мерчантах/ключах, деактивации, отзыве или сроке
-действия legacy-ключа: старый код не умеет сохранять эти ограничения доступа.
-Подробности и границы безопасности:
-[merchant isolation design spec](docs/architecture/merchant-isolation.md).
+Существующие финансовые данные и ранее выданные API-ключи сохраняются.
+При переходе со старого глобального `API_KEY` **до запуска API** импортируйте его
+один раз скрытым вводом:
 
-## Разработка
+```powershell
+docker compose run --rm --no-deps app python -m src.contexts.merchants import-legacy-key
+```
 
-Требования: Python 3.14+ и [uv](https://docs.astral.sh/uv/).
+Импорт относится к legacy merchant `00000000-0000-4000-8000-000000000001`.
+`API_KEY` из окружения сам по себе больше не авторизует запросы.
+Legacy-ключи не превращаются автоматически в аккаунты с почтой/паролем.
+Операторский CLI остаётся инструментом сопровождения и импорта.
+
+Откат миграции профилей запрещён, если уже есть аккаунты, сессии, секреты
+провайдеров или мягкое удаление. Более ранний откат также запрещает потерю
+мерчантов и ограничений ключей. Миграции требуют остановки старых процессов.
+
+## Разработка и проверки
 
 ```powershell
 uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy --strict src tests
+uv run mypy --strict src tests notebooks/gateway_client.py
 uv run pytest tests/unit
 ```
 
-Полный набор тестов использует отдельную БД `payment_gateway_test` и пересоздаёт её таблицы.
+Локальный отдельный запуск Merchant после настройки `.env` и миграций:
+
+```powershell
+$env:DATABASE_URL = 'postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway'
+uv run uvicorn src.contexts.merchants.main:create_app --factory --port 8001
+```
+
+Полные тесты используют **отдельную** БД и пересоздают её таблицы:
 
 ```powershell
 docker compose exec database createdb -U postgres payment_gateway_test
 $env:TEST_DATABASE_URL = 'postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway_test'
-uv run pytest
+uv run pytest -q -p no:cacheprovider
 ```

@@ -15,6 +15,12 @@ class Settings(BaseSettings):
         repr=False,
         description="Deprecated compatibility setting; never used for authentication",
     )
+    merchant_service_url: str = Field(
+        default="http://localhost:8001", description="Merchant service base URL"
+    )
+    merchant_service_secret: str = Field(
+        default="", repr=False, description="Shared secret for internal Merchant service requests"
+    )
     fake_provider_mode: Literal["manual", "auto"] = Field(
         default="manual", description="Fake provider mode"
     )

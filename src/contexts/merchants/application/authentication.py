@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
@@ -13,22 +14,26 @@ class CredentialRepository(Protocol):
 
 
 class AuthenticateAPIKey:
-    def __init__(self, repository: CredentialRepository) -> None:
+    def __init__(
+        self, repository: CredentialRepository, now: Callable[[], datetime] | None = None
+    ) -> None:
         self._repository = repository
+        self._now = now or (lambda: datetime.now(UTC))
 
     async def __call__(self, token: str | None) -> MerchantIdentity | None:
         if not token:
             return None
         digest = credential_digest(token)
         key_id = credential_id(token)
+        now = self._now()
         record = await self._repository.find_key(key_id) if key_id is not None else None
         # The legacy lookup only accepts an explicitly imported database credential.
         # Even legacy strings resembling the new format keep working after import.
-        if record is None or not record[0].authenticates(digest, datetime.now(UTC)):
+        if record is None or not record[0].authenticates(digest, now):
             record = await self._repository.find_legacy_key(digest)
         if record is None:
             return None
         key, merchant_is_active = record
-        if not key.authenticates(digest, datetime.now(UTC)) or not merchant_is_active:
+        if not key.authenticates(digest, now) or not merchant_is_active:
             return None
         return MerchantIdentity(merchant_id=key.merchant_id, api_key_id=key.id)

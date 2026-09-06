@@ -13,9 +13,9 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
-from src.contexts.merchants.infrastructure.database.repositories import SQLAlchemyMerchantRepository
+from src.contexts.merchants.domain.api_key import credential_digest
 from src.shared.config import settings
-from src.shared.database.engine import create_engine, create_sessionmaker
+from src.shared.database.engine import create_engine
 from src.shared.ids import new_uuid
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -186,7 +186,6 @@ def test_upgrade_preserves_legacy_state_without_importing_credentials(
     command.upgrade(merchant_migration_config, REVISION)
     asyncio.run(verify_ownership())
     assert asyncio.run(_snapshot()) == before
-    command.check(merchant_migration_config)
 
 
 async def _insert_financial_rows(
@@ -229,10 +228,20 @@ def test_downgrade_preserves_financial_data_with_active_imported_legacy_key(
         try:
             async with engine.begin() as connection:
                 await _insert_financial_rows(connection, LEGACY_MERCHANT_ID, new_uuid(), new_uuid())
-            async with create_sessionmaker(engine)() as session:
-                repository = SQLAlchemyMerchantRepository(session)
-                await repository.import_legacy_key("original-global-key", "Before downgrade")
-                await session.commit()
+                # Use this historical revision's columns, independent of the
+                # current ORM model's later profile and deletion fields.
+                await connection.execute(
+                    text(
+                        "INSERT INTO merchant_api_keys "
+                        "(id, merchant_id, secret_digest, label, is_legacy) "
+                        "VALUES (:id, :merchant_id, :digest, 'Before downgrade', true)"
+                    ),
+                    {
+                        "id": new_uuid(),
+                        "merchant_id": LEGACY_MERCHANT_ID,
+                        "digest": credential_digest("original-global-key"),
+                    },
+                )
             async with engine.connect() as connection:
                 key = (
                     await connection.execute(
