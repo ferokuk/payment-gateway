@@ -41,17 +41,18 @@ async def _make_provider(
             raise httpx.ConnectError("connection refused", request=request)
         return httpx.Response(200, json={"ok": True})
 
-    # Close the client on exit: callbacks must be awaited inside the block.
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = AutoCallbackFakePaymentProvider(
+        http_client=client,
+        callback_url=CALLBACK_URL,
+        refund_callback_url=REFUND_CALLBACK_URL,
+        callback_secret=SECRET,
+        delay_seconds=0,
+    )
     try:
-        yield AutoCallbackFakePaymentProvider(
-            http_client=client,
-            callback_url=CALLBACK_URL,
-            refund_callback_url=REFUND_CALLBACK_URL,
-            callback_secret=SECRET,
-            delay_seconds=0,
-        )
+        yield provider
     finally:
+        await provider.aclose()
         await client.aclose()
 
 
@@ -305,3 +306,75 @@ async def test_repeated_refund_initiation_sends_one_callback_chain() -> None:
         await _initiate_refund_and_wait(provider, refund)
 
     assert len(recorded) == 1
+
+
+@pytest.mark.anyio
+async def test_close_cancels_delayed_payments_and_refunds_and_is_idempotent() -> None:
+    recorded: list[httpx.Request] = []
+    async with _make_provider(recorded) as provider:
+        provider._delay_seconds = 3600
+        await provider.initiate_payment(_payment_with_scenario("success"))
+        await provider.initiate_refund(_refund_with_scenario("success"))
+        tasks = tuple(provider._tasks)
+        # Let both callback chains enter their initial sleep.
+        await asyncio.sleep(0)
+        await asyncio.wait_for(provider.aclose(), timeout=5)
+        assert len(tasks) == 2
+        assert all(task.cancelled() for task in tasks)
+        assert provider._tasks == set()
+        assert recorded == []
+        assert not provider._http_client.is_closed
+        await provider.aclose()
+        with pytest.raises(RuntimeError, match="closed"):
+            await provider.initiate_payment(_payment_with_scenario("success"))
+        with pytest.raises(RuntimeError, match="closed"):
+            await provider.initiate_refund(_refund_with_scenario("success"))
+        assert provider._tasks == set()
+
+
+@pytest.mark.anyio
+async def test_close_waits_for_inflight_callback_cleanup() -> None:
+    entered = asyncio.Event()
+    cancelling = asyncio.Event()
+    release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelling.set()
+            await release.wait()
+            cleaned.set()
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = AutoCallbackFakePaymentProvider(
+            client, CALLBACK_URL, REFUND_CALLBACK_URL, SECRET, delay_seconds=0
+        )
+        await provider.initiate_refund(_refund_with_scenario("success"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        tasks = tuple(provider._tasks)
+        closing = asyncio.create_task(provider.aclose())
+        try:
+            await asyncio.wait_for(cancelling.wait(), timeout=5)
+            assert not closing.done()
+            assert not cleaned.is_set()
+            assert not client.is_closed
+        finally:
+            release.set()
+            await asyncio.wait_for(closing, timeout=5)
+        assert cleaned.is_set()
+        assert all(task.cancelled() for task in tasks)
+        assert provider._tasks == set()
+
+
+@pytest.mark.anyio
+async def test_close_after_callbacks_complete_is_harmless() -> None:
+    async with _make_provider([]) as provider:
+        await _initiate_and_wait(provider, _payment_with_scenario("success"))
+        await _initiate_refund_and_wait(provider, _refund_with_scenario("success"))
+        assert provider._tasks == set()
+        await provider.aclose()
+        assert provider._tasks == set()

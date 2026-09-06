@@ -58,3 +58,14 @@ async def test_set_response_for_missing_key_raises() -> None:
 
     with pytest.raises(LookupError):
         await repo.set_response("missing", {})
+
+
+@pytest.mark.anyio
+async def test_response_is_write_once_and_returns_the_winner() -> None:
+    repo = FakeRefundIdempotencyKeyRepository()
+    await repo.add(_record())
+    first = await repo.set_response("abc", {"status": "pending"})
+    second = await repo.set_response("abc", {"status": "success"})
+    assert first == second == {"status": "pending"}
+    stored = await repo.get("abc")
+    assert stored is not None and stored.response_body == first

@@ -13,6 +13,9 @@ from src.contexts.core_payment.domain.statuses import (
     RefundFailureReasons,
     RefundStatuses,
 )
+from src.contexts.core_payment.infrastructure.database.repositories import (
+    RefundReconciliationCandidate,
+)
 from src.contexts.core_payment.infrastructure.providers.base import (
     ProviderInitiationError,
     ProviderRejectedError,
@@ -63,6 +66,8 @@ def _use_case(
     refund_repo: FakeRefundRepository,
     provider: RecordingFakeProvider,
     session: FakeSession,
+    *,
+    batch_size: int = 100,
 ) -> ReconcileStuckRefundsUseCase:
     return ReconcileStuckRefundsUseCase(
         refund_repo,  # type: ignore[arg-type]
@@ -70,8 +75,8 @@ def _use_case(
         provider,
         session,  # type: ignore[arg-type]
         stuck_after=STUCK_AFTER,
-        give_up_after=GIVE_UP_AFTER,
-        batch_size=100,
+        initiation_max_age=GIVE_UP_AFTER,
+        batch_size=batch_size,
     )
 
 
@@ -125,6 +130,67 @@ async def test_absent_refund_past_the_window_is_closed_without_retry() -> None:
     stored = await _status_of(refund_repo, refund)
     assert stored.status is RefundStatuses.FAILED
     assert stored.failure_reason is RefundFailureReasons.NOT_ACCEPTED_BY_PROVIDER
+    assert await _reserved(payment_repo, payment) == Decimal("0")
+
+
+@pytest.mark.parametrize("offset_us", [-1, 0, 1])
+@pytest.mark.anyio
+async def test_reconciliation_obeys_same_initiation_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    offset_us: int,
+) -> None:
+    payment_repo, refund_repo = FakePaymentRepository(), FakeRefundRepository()
+    payment = await _payment_with_reservation(payment_repo)
+    refund = await _unresolved_refund(refund_repo, payment)
+
+    class _Clock:
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return refund.created_at + GIVE_UP_AFTER + timedelta(microseconds=offset_us)
+
+    monkeypatch.setattr(
+        "src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds.datetime", _Clock
+    )
+    provider = RecordingFakeProvider(refund_status=ABSENT)
+    session = FakeSession(payment_repo._payments, refund_repo._refunds)
+    report = await _use_case(payment_repo, refund_repo, provider, session)()
+    if offset_us > 0:
+        assert report.closed == 1 and report.resumed == 0
+        assert provider.initiated_refunds == []
+    else:
+        assert report.resumed == 1 and report.closed == 0
+        assert [item.id for item in provider.initiated_refunds] == [refund.id]
+
+
+@pytest.mark.anyio
+async def test_slow_status_query_cannot_extend_initiation_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payment_repo, refund_repo = FakePaymentRepository(), FakeRefundRepository()
+    payment = await _payment_with_reservation(payment_repo)
+    refund = await _unresolved_refund(refund_repo, payment)
+    deadline = refund.created_at + GIVE_UP_AFTER
+    moment = deadline - timedelta(seconds=1)
+
+    class _Clock:
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return moment
+
+    class _SlowProvider(RecordingFakeProvider):
+        async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
+            nonlocal moment
+            moment = deadline + timedelta(seconds=1)
+            return ABSENT
+
+    monkeypatch.setattr(
+        "src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds.datetime", _Clock
+    )
+    provider = _SlowProvider()
+    session = FakeSession(payment_repo._payments, refund_repo._refunds)
+    report = await _use_case(payment_repo, refund_repo, provider, session)()
+    assert report.closed == 1 and report.resumed == 0
+    assert provider.initiated_refunds == []
     assert await _reserved(payment_repo, payment) == Decimal("0")
 
 
@@ -345,7 +411,122 @@ async def test_commits_each_refund_separately() -> None:
 
     report = await _use_case(payment_repo, refund_repo, provider, session)()
 
-    # One commit closes the read transaction before any network call, then one
-    # per refund: a failure on the second must not undo the first.
+    # Close the read transaction, then persist the schedule and outcome
+    # separately for each refund: a later failure cannot undo earlier work.
     assert report.completed == 2
-    assert session.commits == 3
+    assert session.commits == 5
+
+
+@pytest.mark.parametrize("head_status", [UNKNOWN, ABSENT, PENDING_AT_PROVIDER])
+@pytest.mark.anyio
+async def test_unresolved_first_batch_does_not_starve_later_refunds(
+    head_status: RefundProviderStatus,
+) -> None:
+    payment_repo, refund_repo = FakePaymentRepository(), FakeRefundRepository()
+    head: list[Refund] = []
+    tail: list[Refund] = []
+    for age, group in [(timedelta(days=3), head), (timedelta(hours=1), tail)]:
+        for _ in range(2):
+            payment = await _payment_with_reservation(payment_repo)
+            group.append(
+                await _unresolved_refund(refund_repo, payment, RefundStatuses.PENDING, age)
+            )
+
+    class _Provider(RecordingFakeProvider):
+        async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
+            self.status_queries.append(refund)
+            return head_status if refund.id in {item.id for item in head} else FAILED
+
+    provider = _Provider()
+    for _ in range(2):
+        # Reconstruct the worker between passes: scheduling lives in the store.
+        session = FakeSession(payment_repo._payments, refund_repo._refunds)
+        report = await _use_case(payment_repo, refund_repo, provider, session, batch_size=2)()
+
+    assert report.closed == 2
+    assert [refund.id for refund in provider.status_queries] == [
+        refund.id for refund in head + tail
+    ]
+    for refund in head:
+        assert (await _status_of(refund_repo, refund)).status is RefundStatuses.PENDING
+        stored_payment = await payment_repo.get_by_id(refund.payment_id)
+        assert stored_payment is not None and stored_payment.refunded_amount == AMOUNT
+    for refund in tail:
+        assert (await _status_of(refund_repo, refund)).status is RefundStatuses.FAILED
+        stored_payment = await payment_repo.get_by_id(refund.payment_id)
+        assert stored_payment is not None and stored_payment.refunded_amount == Decimal("0")
+
+
+@pytest.mark.anyio
+async def test_backoff_is_persistent_due_at_boundary_and_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    moment = datetime.now(UTC)
+
+    class _Clock:
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return moment
+
+    monkeypatch.setattr(
+        "src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds.datetime", _Clock
+    )
+    payment_repo, refund_repo = FakePaymentRepository(), FakeRefundRepository()
+    payment = await _payment_with_reservation(payment_repo)
+    refund = await _unresolved_refund(refund_repo, payment)
+    provider = RecordingFakeProvider(refund_status=UNKNOWN)
+    session = FakeSession(payment_repo._payments, refund_repo._refunds)
+    for attempt, seconds in enumerate([60, 120, 240, 480, 960, 1920, 3600, 3600], start=1):
+        use_case = _use_case(payment_repo, refund_repo, provider, session)
+        assert (await use_case()).unresolved == 1
+        due_at, attempts = refund_repo._reconciliation[refund.id]
+        assert attempts == attempt
+        assert due_at == moment + timedelta(seconds=seconds)
+        moment = due_at - timedelta(microseconds=1)
+        assert (await use_case()).unresolved == 0
+        moment = due_at
+    assert len(provider.status_queries) == 8
+
+
+@pytest.mark.anyio
+async def test_schedule_survives_provider_crash_and_later_refund_is_processed() -> None:
+    payment_repo, refund_repo = FakePaymentRepository(), FakeRefundRepository()
+    for age in (timedelta(hours=2), timedelta(hours=1)):
+        payment = await _payment_with_reservation(payment_repo)
+        await _unresolved_refund(refund_repo, payment, age=age)
+
+    class _CrashingProvider(RecordingFakeProvider):
+        async def get_refund_status(self, refund: Refund) -> RefundProviderStatus:
+            raise RuntimeError("adapter bug")
+
+    session = FakeSession(payment_repo._payments, refund_repo._refunds)
+    with pytest.raises(RuntimeError, match="adapter bug"):
+        await _use_case(payment_repo, refund_repo, _CrashingProvider(), session, batch_size=1)()
+    assert session.commits == 2
+    assert (
+        await _use_case(
+            payment_repo,
+            refund_repo,
+            RecordingFakeProvider(refund_status=SUCCEEDED),
+            session,
+            batch_size=1,
+        )()
+    ).completed == 1
+
+
+@pytest.mark.anyio
+async def test_lost_schedule_claim_does_not_query_provider() -> None:
+    class _ClaimedRepository(FakeRefundRepository):
+        async def schedule_reconciliation(
+            self, candidate: RefundReconciliationCandidate, *, next_check_at: datetime
+        ) -> bool:
+            return False
+
+    payment_repo, refund_repo = FakePaymentRepository(), _ClaimedRepository()
+    payment = await _payment_with_reservation(payment_repo)
+    await _unresolved_refund(refund_repo, payment)
+    provider = RecordingFakeProvider(refund_status=SUCCEEDED)
+    session = FakeSession(payment_repo._payments, refund_repo._refunds)
+    report = await _use_case(payment_repo, refund_repo, provider, session)()
+    assert report.conflicts == 1
+    assert provider.status_queries == []

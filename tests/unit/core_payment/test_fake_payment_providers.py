@@ -32,6 +32,8 @@ async def test_manual_provider_accepts_payment_without_side_effects() -> None:
 
 @pytest.mark.anyio
 async def test_di_selects_provider_by_mode() -> None:
+    from contextlib import asynccontextmanager
+
     import httpx
     from src.contexts.core_payment.infrastructure.providers.fake_auto import (
         AutoCallbackFakePaymentProvider,
@@ -50,11 +52,11 @@ async def test_di_selects_provider_by_mode() -> None:
     provider_factory = PaymentProviderProvider()
     # async with guarantees the client is closed even if the asserts below fail.
     async with httpx.AsyncClient() as client:
-        manual = provider_factory.get_payment_provider(make_settings("manual"), client)
-        auto = provider_factory.get_payment_provider(make_settings("auto"), client)
-
-    assert isinstance(manual, ManualFakePaymentProvider)
-    assert isinstance(auto, AutoCallbackFakePaymentProvider)
+        factory = asynccontextmanager(provider_factory.get_payment_provider)
+        async with factory(make_settings("manual"), client) as manual:
+            assert isinstance(manual, ManualFakePaymentProvider)
+        async with factory(make_settings("auto"), client) as auto:
+            assert isinstance(auto, AutoCallbackFakePaymentProvider)
 
 
 @pytest.mark.anyio

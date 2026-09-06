@@ -24,13 +24,17 @@ async def test_list_unresolved_filters_by_status_age_and_limit() -> None:
         await repo.add(refund)
 
     stale = moment - timedelta(minutes=30)
-    unresolved = await repo.list_unresolved(statuses=UNRESOLVED, created_before=stale, limit=10)
-    capped = await repo.list_unresolved(statuses=UNRESOLVED, created_before=stale, limit=1)
+    unresolved = await repo.list_unresolved(
+        statuses=UNRESOLVED, created_before=stale, due_before=moment, limit=10
+    )
+    capped = await repo.list_unresolved(
+        statuses=UNRESOLVED, created_before=stale, due_before=moment, limit=1
+    )
 
     # Oldest first. A refund created a moment ago is still in flight, and one
     # that already reached success has nothing left to reconcile.
-    assert [refund.id for refund in unresolved] == [pending.id, created.id, errored.id]
-    assert [refund.id for refund in capped] == [pending.id]
+    assert [item.refund.id for item in unresolved] == [pending.id, created.id, errored.id]
+    assert [item.refund.id for item in capped] == [pending.id]
 
 
 @pytest.mark.anyio

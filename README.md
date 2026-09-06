@@ -1,0 +1,71 @@
+# Payment Gateway
+
+Платёжный шлюз с REST API для создания платежей и частичных возвратов.
+Поддерживает идемпотентные операции, обработку callbacks от платёжных провайдеров
+и фоновую сверку статусов.
+
+**Стек:** Python 3.14, FastAPI, PostgreSQL, SQLAlchemy, Alembic, Dishka.
+
+## Целевая архитектура
+
+[![Архитектура Payment Gateway](assets/payment-gateway.svg)](assets/payment-gateway.svg)
+
+## Запуск
+
+Требования: Docker Compose. Команды — для PowerShell.
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+docker compose up --build -d
+```
+
+API: `http://localhost:8000`. PostgreSQL: `localhost:5432`.
+Конфигурация: [.env.example](.env.example).
+Тестовый провайдер: `provider_id=1`; автоматические callbacks: `FAKE_PROVIDER_MODE=auto`.
+
+## API
+
+[Swagger](http://localhost:8000/docs) · [OpenAPI](http://localhost:8000/openapi.json)
+
+| Метод | Эндпоинт | Назначение |
+| --- | --- | --- |
+| POST | `/payments` | Создание платежа |
+| GET | `/payments/{payment_id}` | Статус платежа |
+| POST | `/payments/{payment_id}/refunds` | Создание возврата |
+| GET | `/payments/{payment_id}/refunds` | Возвраты платежа |
+| GET | `/refunds/{refund_id}` | Статус возврата |
+| POST | `/callbacks/payments` | Обработка результата платежа |
+| POST | `/callbacks/refunds` | Обработка результата возврата |
+| GET | `/health` | Проверка доступности сервиса и БД |
+
+Авторизация: `X-API-Key` для клиентских запросов, `X-Callback-Secret` для callbacks.
+Идемпотентность создания платежей и возвратов: `Idempotency-Key`.
+
+## Миграции
+
+Миграции применяются при запуске Compose. Отдельный запуск:
+
+```powershell
+docker compose build migrate
+docker compose run --rm migrate
+```
+
+## Разработка
+
+Требования: Python 3.14+ и [uv](https://docs.astral.sh/uv/).
+
+```powershell
+uv sync --frozen
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy --strict src tests
+uv run pytest tests/unit
+```
+
+Полный набор тестов использует отдельную БД `payment_gateway_test` и пересоздаёт её таблицы.
+
+```powershell
+docker compose exec database createdb -U postgres payment_gateway_test
+$env:TEST_DATABASE_URL = 'postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway_test'
+uv run pytest
+```

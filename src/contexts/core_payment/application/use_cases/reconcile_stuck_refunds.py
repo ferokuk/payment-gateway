@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.contexts.core_payment.application.dto.refund import ReconciliationReportDTO
 from src.contexts.core_payment.domain.exceptions import (
     InvalidRefundFailureReasonError,
+    RefundInitiationExpiredError,
     StaleRefundStateError,
 )
 from src.contexts.core_payment.domain.refund import Refund
@@ -58,42 +59,65 @@ class ReconcileStuckRefundsUseCase:
         session: AsyncSession,
         *,
         stuck_after: timedelta,
-        give_up_after: timedelta,
+        initiation_max_age: timedelta,
         batch_size: int,
+        retry_after: timedelta = timedelta(minutes=1),
+        retry_max: timedelta = timedelta(hours=1),
     ) -> None:
+        if retry_after <= timedelta(0) or retry_max < retry_after:
+            raise ValueError("Retry delays must satisfy 0 < retry_after <= retry_max")
         self._refund_repository = refund_repository
         self._payment_repository = payment_repository
         self._payment_provider = payment_provider
         self._session = session
         self._stuck_after = stuck_after
-        self._give_up_after = give_up_after
+        self._initiation_max_age = initiation_max_age
         self._batch_size = batch_size
+        self._retry_after = retry_after
+        self._retry_max = retry_max
 
     async def __call__(self) -> ReconciliationReportDTO:
         now = datetime.now(UTC)
         unresolved = await self._refund_repository.list_unresolved(
             statuses=UNRESOLVED_STATUSES,
             created_before=now - self._stuck_after,
+            due_before=now,
             limit=self._batch_size,
         )
         await self._session.commit()
 
         report = ReconciliationReportDTO()
-        for refund in unresolved:
-            await self._reconcile(refund, report, now)
+        for candidate in unresolved:
+            checked_at = datetime.now(UTC)
+            claimed = await self._refund_repository.schedule_reconciliation(
+                candidate,
+                next_check_at=checked_at + self._retry_delay(candidate.attempts),
+            )
+            await self._session.commit()
+            if not claimed:
+                report.conflicts += 1
+                continue
+            await self._reconcile(candidate.refund, report)
         logger.info("refund_reconciliation_finished", **report.model_dump())
         return report
 
-    async def _reconcile(
-        self, refund: Refund, report: ReconciliationReportDTO, now: datetime
-    ) -> None:
+    def _retry_delay(self, attempts: int) -> timedelta:
+        # Stop doubling at the cap: long-lived disputes cannot overflow the
+        # exponent or monopolize the head of the due queue, even after restart.
+        delay = self._retry_after
+        while attempts > 0 and delay < self._retry_max:
+            delay = min(delay * 2, self._retry_max)
+            attempts -= 1
+        return delay
+
+    async def _reconcile(self, refund: Refund, report: ReconciliationReportDTO) -> None:
         status = await self._payment_provider.get_refund_status(refund)
         match status.state:
             case RefundProviderState.UNKNOWN:
                 logger.info("refund_status_unknown", refund_id=str(refund.id))
                 report.unresolved += 1
             case RefundProviderState.ABSENT:
-                await self._handle_absence(refund, report, now)
+                await self._handle_absence(refund, report)
             case RefundProviderState.PENDING:
                 await self._resume(refund, report)
             case RefundProviderState.SUCCEEDED:
@@ -103,9 +127,7 @@ class ReconcileStuckRefundsUseCase:
             case _:
                 assert_never(status.state)
 
-    async def _handle_absence(
-        self, refund: Refund, report: ReconciliationReportDTO, now: datetime
-    ) -> None:
+    async def _handle_absence(self, refund: Refund, report: ReconciliationReportDTO) -> None:
         if refund.status is not RefundStatuses.CREATED:
             # The provider denies a refund it once accepted. Believing that and
             # releasing the reservation could let the same money go out twice,
@@ -118,7 +140,12 @@ class ReconcileStuckRefundsUseCase:
             report.disputed += 1
             return
 
-        if now - refund.created_at > self._give_up_after:
+        try:
+            # A slow status query can cross the deadline after the batch began.
+            refund.ensure_initiation_within_window(
+                now=datetime.now(UTC), max_age=self._initiation_max_age
+            )
+        except RefundInitiationExpiredError:
             # Absence is confirmed, so the money can go back — but a repeat this
             # late could slip past the provider's deduplication key and pay
             # twice. The merchant starts a fresh refund instead.

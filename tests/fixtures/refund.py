@@ -15,6 +15,7 @@ from src.contexts.core_payment.domain.refund import Refund
 from src.contexts.core_payment.domain.statuses import RefundStatuses
 from src.contexts.core_payment.infrastructure.database.repositories import (
     RefundIdempotencyRecord,
+    RefundReconciliationCandidate,
 )
 from src.shared.ids import new_uuid
 
@@ -22,6 +23,7 @@ from src.shared.ids import new_uuid
 class FakeRefundRepository:
     def __init__(self) -> None:
         self._refunds: dict[UUID, Refund] = {}
+        self._reconciliation: dict[UUID, tuple[datetime, int]] = {}
 
     async def add(self, refund: Refund) -> None:
         # Copy so the store is an honest boundary: outside mutations of the
@@ -38,15 +40,47 @@ class FakeRefundRepository:
         return [refund.model_copy(deep=True) for refund in found]
 
     async def list_unresolved(
-        self, *, statuses: Collection[RefundStatuses], created_before: datetime, limit: int
-    ) -> list[Refund]:
+        self,
+        *,
+        statuses: Collection[RefundStatuses],
+        created_before: datetime,
+        due_before: datetime,
+        limit: int,
+    ) -> list[RefundReconciliationCandidate]:
         found = [
             refund
             for refund in self._refunds.values()
-            if refund.status in statuses and refund.created_at < created_before
+            if refund.status in statuses
+            and refund.status
+            in {RefundStatuses.CREATED, RefundStatuses.PENDING, RefundStatuses.ERROR}
+            and refund.created_at < created_before
+            and self._reconciliation.get(refund.id, (refund.created_at, 0))[0] <= due_before
         ]
-        found.sort(key=lambda refund: refund.created_at)
-        return [refund.model_copy(deep=True) for refund in found[:limit]]
+        found.sort(
+            key=lambda refund: (
+                self._reconciliation.get(refund.id, (refund.created_at, 0))[0],
+                refund.id,
+            )
+        )
+        return [
+            RefundReconciliationCandidate(
+                refund.model_copy(deep=True),
+                self._reconciliation.get(refund.id, (refund.created_at, 0))[1],
+            )
+            for refund in found[:limit]
+        ]
+
+    async def schedule_reconciliation(
+        self, candidate: RefundReconciliationCandidate, *, next_check_at: datetime
+    ) -> bool:
+        stored = self._refunds.get(candidate.refund.id)
+        if stored is None or stored.status is not candidate.refund.status:
+            return False
+        attempts = self._reconciliation.get(stored.id, (stored.created_at, 0))[1]
+        if attempts != candidate.attempts:
+            return False
+        self._reconciliation[stored.id] = (next_check_at, attempts + 1)
+        return True
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
         stored = self._refunds.get(refund.id)
@@ -73,10 +107,14 @@ class FakeRefundIdempotencyKeyRepository:
             )
         self._records[record.key] = record
 
-    async def set_response(self, key: str, response_body: dict[str, Any]) -> None:
+    async def set_response(self, key: str, response_body: dict[str, Any]) -> dict[str, Any]:
         if key not in self._records:
             raise LookupError(f"Idempotency key {key!r} is not reserved")
-        self._records[key] = replace(self._records[key], response_body=response_body)
+        record = self._records[key]
+        if record.response_body is not None:
+            return record.response_body
+        self._records[key] = replace(record, response_body=response_body)
+        return response_body
 
 
 def make_refund(

@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID as PY_UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, String, func, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, func, text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -70,6 +70,16 @@ class IdempotencyKeyModel(Base):
 class RefundModel(Base):
     __tablename__ = "refunds"
 
+    __table_args__ = (
+        CheckConstraint("reconciliation_attempts >= 0", name="ck_refunds_reconciliation_attempts"),
+        Index(
+            "ix_refunds_reconciliation_due",
+            text("coalesce(next_reconcile_at, created_at)"),
+            "id",
+            postgresql_where=text("status IN ('CREATED', 'PENDING', 'ERROR')"),
+        ),
+    )
+
     id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=new_uuid)
     payment_id: Mapped[PY_UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("payments.id"), nullable=False, index=True
@@ -87,6 +97,10 @@ class RefundModel(Base):
     )
     error_message: Mapped[str | None] = mapped_column(default=None, nullable=True)
 
+    # Operational scheduling stays out of the domain aggregate and public DTOs.
+    next_reconcile_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciliation_attempts: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+
 
 class RefundIdempotencyKeyModel(Base):
     __tablename__ = "refund_idempotency_keys"
@@ -96,7 +110,7 @@ class RefundIdempotencyKeyModel(Base):
     refund_id: Mapped[PY_UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("refunds.id"), nullable=False
     )
-    # NULL <=> initiation not confirmed (the refund is stuck in CREATED).
+    # Missing HTTP snapshot: reconciliation may already have advanced the refund.
     response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

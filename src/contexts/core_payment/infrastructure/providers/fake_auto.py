@@ -104,12 +104,14 @@ class AutoCallbackFakePaymentProvider(PaymentProvider):
         # Keep references to the tasks so GC does not collect them before completion
         # (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task).
         self._tasks: set[asyncio.Task[None]] = set()
+        self._closed = False
         # Stand-in for the provider's own store: what it knows about each
         # refund it took. In-memory, so it only covers one process — enough to
         # demonstrate the contract; a real PSP keeps this on its side.
         self._refund_outcomes: dict[UUID, RefundProviderStatus] = {}
 
     async def initiate_payment(self, payment: Payment) -> None:
+        self._ensure_open()
         raw_scenario = (payment.metadata or {}).get(_SCENARIO_KEY, _DEFAULT_SCENARIO)
         callbacks = _SCENARIOS.get(raw_scenario) if isinstance(raw_scenario, str) else None
         if callbacks is None:
@@ -130,6 +132,7 @@ class AutoCallbackFakePaymentProvider(PaymentProvider):
         task.add_done_callback(self._tasks.discard)
 
     async def initiate_refund(self, refund: Refund) -> None:
+        self._ensure_open()
         raw_scenario = (refund.metadata or {}).get(_SCENARIO_KEY, _DEFAULT_SCENARIO)
         callbacks = _REFUND_SCENARIOS.get(raw_scenario) if isinstance(raw_scenario, str) else None
         if callbacks is None:
@@ -172,6 +175,20 @@ class AutoCallbackFakePaymentProvider(PaymentProvider):
                 return reconstructed
         return RefundProviderStatus(RefundProviderState.ABSENT)
 
+    async def aclose(self) -> None:
+        """Cancel and drain callbacks while the shared HTTP client is open."""
+        self._closed = True
+        # Done callbacks discard tasks during gather, so use a stable snapshot.
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Auto callback provider is closed")
+
     async def _send_callbacks(
         self, url: str, payloads: list[dict[str, Any]], entity_id: str
     ) -> None:
@@ -190,9 +207,8 @@ class AutoCallbackFakePaymentProvider(PaymentProvider):
                     response_code=response.status_code,
                 )
             except Exception:
-                # Fire-and-forget: not just httpx network errors but also, e.g.,
-                # a RuntimeError from a client closed on shutdown must not
-                # leave "Task exception was never retrieved" behind.
+                # Unexpected delivery errors must also be retrieved and logged.
+                # CancelledError inherits BaseException and passes through.
                 logger.exception(
                     "fake_callback_delivery_failed",
                     entity_id=entity_id,

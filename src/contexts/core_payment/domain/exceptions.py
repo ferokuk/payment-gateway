@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -76,6 +77,15 @@ class IdempotencyKeyMismatchError(Exception):
 
 class RefundNotFoundError(Exception):
     pass
+
+
+class RefundInitiationExpiredError(Exception):
+    def __init__(self, refund_id: UUID, expires_at: datetime) -> None:
+        self.refund_id = refund_id
+        self.expires_at = expires_at
+
+    def __str__(self) -> str:
+        return f"Refund {self.refund_id} initiation window expired at {self.expires_at.isoformat()}"
 
 
 class PaymentNotRefundableError(Exception):
