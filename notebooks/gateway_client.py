@@ -10,7 +10,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -91,11 +91,11 @@ def scenario_for(index: int) -> str:
 
 @dataclass(frozen=True)
 class GatewayConfig:
-    """Connection settings. Defaults match .env.example."""
+    """Connection settings. Supply a key issued by the merchant operator CLI."""
 
     base_url: str = "http://localhost:8000"
-    api_key: str = "local-dev-api-key"
-    callback_secret: str = "local-dev-callback-secret"
+    api_key: str = field(default="", repr=False)
+    callback_secret: str = field(default="local-dev-callback-secret", repr=False)
     # Only the reconciliation section needs it: that job lives behind the API,
     # not in front of it. The host port comes from docker-compose.
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/payment_gateway"
@@ -548,8 +548,8 @@ async def run_reconciliation_pass(
         ReconcileStuckRefundsUseCase,
     )
     from src.contexts.core_payment.infrastructure.database.repositories import (
-        SQLAlchemyPaymentRepository,
-        SQLAlchemyRefundRepository,
+        SystemSQLAlchemyPaymentRepository,
+        SystemSQLAlchemyRefundRepository,
     )
     from src.contexts.core_payment.infrastructure.providers.fake_auto import (
         AutoCallbackFakePaymentProvider,
@@ -567,8 +567,8 @@ async def run_reconciliation_pass(
             delay_seconds=0.1,
         )
         use_case = ReconcileStuckRefundsUseCase(
-            SQLAlchemyRefundRepository(session),
-            SQLAlchemyPaymentRepository(session),
+            SystemSQLAlchemyRefundRepository(session),
+            SystemSQLAlchemyPaymentRepository(session),
             provider,
             session,
             stuck_after=timedelta(seconds=stuck_after_seconds),

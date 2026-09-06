@@ -18,24 +18,36 @@ from src.contexts.core_payment.infrastructure.database.repositories import (
     RefundReconciliationCandidate,
 )
 from src.shared.ids import new_uuid
+from tests.fixtures.merchants import MERCHANT_ID
 
 
 class FakeRefundRepository:
-    def __init__(self) -> None:
+    def __init__(self, merchant_id: UUID = MERCHANT_ID) -> None:
+        self.merchant_id = merchant_id
         self._refunds: dict[UUID, Refund] = {}
         self._reconciliation: dict[UUID, tuple[datetime, int]] = {}
 
     async def add(self, refund: Refund) -> None:
+        if refund.merchant_id != self.merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
         # Copy so the store is an honest boundary: outside mutations of the
         # object must not leak into the "DB" without an update call.
         self._refunds[refund.id] = refund.model_copy(deep=True)
 
     async def get_by_id(self, refund_id: UUID) -> Refund | None:
         stored = self._refunds.get(refund_id)
-        return stored.model_copy(deep=True) if stored else None
+        return (
+            stored.model_copy(deep=True)
+            if stored and stored.merchant_id == self.merchant_id
+            else None
+        )
 
     async def list_by_payment_id(self, payment_id: UUID) -> list[Refund]:
-        found = [refund for refund in self._refunds.values() if refund.payment_id == payment_id]
+        found = [
+            refund
+            for refund in self._refunds.values()
+            if refund.payment_id == payment_id and refund.merchant_id == self.merchant_id
+        ]
         found.sort(key=lambda refund: (refund.created_at, refund.id))
         return [refund.model_copy(deep=True) for refund in found]
 
@@ -50,7 +62,8 @@ class FakeRefundRepository:
         found = [
             refund
             for refund in self._refunds.values()
-            if refund.status in statuses
+            if refund.merchant_id == self.merchant_id
+            and refund.status in statuses
             and refund.status
             in {RefundStatuses.CREATED, RefundStatuses.PENDING, RefundStatuses.ERROR}
             and refund.created_at < created_before
@@ -74,7 +87,11 @@ class FakeRefundRepository:
         self, candidate: RefundReconciliationCandidate, *, next_check_at: datetime
     ) -> bool:
         stored = self._refunds.get(candidate.refund.id)
-        if stored is None or stored.status is not candidate.refund.status:
+        if (
+            stored is None
+            or stored.merchant_id != self.merchant_id
+            or stored.status is not candidate.refund.status
+        ):
             return False
         attempts = self._reconciliation.get(stored.id, (stored.created_at, 0))[1]
         if attempts != candidate.attempts:
@@ -83,8 +100,10 @@ class FakeRefundRepository:
         return True
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
+        if refund.merchant_id != self.merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
         stored = self._refunds.get(refund.id)
-        if stored is None:
+        if stored is None or stored.merchant_id != self.merchant_id:
             raise RefundNotFoundError
         if stored.status is not expected_status:
             raise StaleRefundStateError(refund.id, expected_status)
@@ -92,28 +111,31 @@ class FakeRefundRepository:
 
 
 class FakeRefundIdempotencyKeyRepository:
-    def __init__(self) -> None:
-        self._records: dict[str, RefundIdempotencyRecord] = {}
+    def __init__(self, merchant_id: UUID = MERCHANT_ID) -> None:
+        self.merchant_id = merchant_id
+        self._records: dict[tuple[UUID, str], RefundIdempotencyRecord] = {}
 
     async def get(self, key: str) -> RefundIdempotencyRecord | None:
-        return self._records.get(key)
+        return self._records.get((self.merchant_id, key))
 
     async def add(self, record: RefundIdempotencyRecord) -> None:
-        if record.key in self._records:
+        if record.merchant_id != self.merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
+        if (self.merchant_id, record.key) in self._records:
             raise IntegrityError(
                 "INSERT INTO refund_idempotency_keys",
                 params=None,
                 orig=Exception("duplicate key value violates unique constraint"),
             )
-        self._records[record.key] = record
+        self._records[(self.merchant_id, record.key)] = record
 
     async def set_response(self, key: str, response_body: dict[str, Any]) -> dict[str, Any]:
-        if key not in self._records:
+        if (self.merchant_id, key) not in self._records:
             raise LookupError(f"Idempotency key {key!r} is not reserved")
-        record = self._records[key]
+        record = self._records[(self.merchant_id, key)]
         if record.response_body is not None:
             return record.response_body
-        self._records[key] = replace(record, response_body=response_body)
+        self._records[(self.merchant_id, key)] = replace(record, response_body=response_body)
         return response_body
 
 
@@ -124,6 +146,7 @@ def make_refund(
     created_at: datetime | None = None,
 ) -> Refund:
     return Refund(
+        merchant_id=MERCHANT_ID,
         id=new_uuid(),
         payment_id=payment_id if payment_id is not None else new_uuid(),
         amount=amount,

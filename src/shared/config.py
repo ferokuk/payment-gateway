@@ -10,7 +10,11 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, description="Application port")
     app_env: str = Field(default="local", description="Application environment")
     is_debug: bool = Field(default=True, description="Whether debug mode is enabled")
-    api_key: str = Field(description="Merchant API key (X-API-Key header)")
+    api_key: str | None = Field(
+        default=None,
+        repr=False,
+        description="Deprecated compatibility setting; never used for authentication",
+    )
     fake_provider_mode: Literal["manual", "auto"] = Field(
         default="manual", description="Fake provider mode"
     )

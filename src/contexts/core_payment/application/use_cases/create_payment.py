@@ -93,6 +93,7 @@ class CreatePaymentUseCase:
                     await self._session.flush()
                     await self._idempotency_repository.add(
                         IdempotencyRecord(
+                            merchant_id=payment.merchant_id,
                             key=idempotency_key,
                             request_hash=_request_hash(command),
                             payment_id=payment.id,
@@ -124,10 +125,10 @@ class CreatePaymentUseCase:
             raise LookupError(f"Idempotency key {idempotency_key!r} lost its response")
         return _replay(record)
 
-    @staticmethod
-    def _build_payment(command: CreatePaymentInputDTO) -> Payment:
+    def _build_payment(self, command: CreatePaymentInputDTO) -> Payment:
         return Payment(
             id=new_uuid(),
+            merchant_id=self._payment_repository.merchant_id,
             amount=command.amount,
             currency=command.currency,
             status=PaymentStatuses.CREATED,

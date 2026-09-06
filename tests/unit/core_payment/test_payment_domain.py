@@ -13,11 +13,13 @@ from src.contexts.core_payment.domain.payment import (
 )
 from src.contexts.core_payment.domain.statuses import FailureReasons, PaymentStatuses
 from src.shared.ids import new_uuid
+from tests.fixtures.merchants import MERCHANT_ID
 from tests.fixtures.payment import make_payment
 
 
 def test_payment_is_created_with_given_fields() -> None:
     payment = Payment(
+        merchant_id=MERCHANT_ID,
         id=new_uuid(),
         provider_id=1,
         status=PaymentStatuses.CREATED,
