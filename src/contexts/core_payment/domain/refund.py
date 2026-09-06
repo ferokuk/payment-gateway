@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -7,6 +7,7 @@ from pydantic import UUID7, BaseModel, Field
 from src.contexts.core_payment.domain.exceptions import (
     InvalidRefundFailureReasonError,
     InvalidRefundStatusTransitionError,
+    RefundInitiationExpiredError,
 )
 from src.contexts.core_payment.domain.statuses import RefundFailureReasons, RefundStatuses
 
@@ -20,6 +21,13 @@ class Refund(BaseModel):
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary merchant data")
     failure_reason: RefundFailureReasons | None = Field(default=None, description="Failure reason")
     error_message: str | None = Field(default=None, description="Error message")
+
+    def ensure_initiation_within_window(self, *, now: datetime, max_age: timedelta) -> None:
+        # API recovery and reconciliation must obey the same deadline: a
+        # later call can outlive the provider's deduplication guarantee.
+        expires_at = self.created_at + max_age
+        if now > expires_at:
+            raise RefundInitiationExpiredError(self.id, expires_at)
 
     def mark_pending(self) -> None:
         if RefundStatuses.PENDING not in _ALLOWED_TRANSITIONS[self.status]:

@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, select
+from sqlalchemy import JSON, CursorResult, func, or_, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,12 @@ class RefundIdempotencyRecord:
     request_hash: str
     refund_id: UUID
     response_body: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class RefundReconciliationCandidate:
+    refund: Refund
+    attempts: int
 
 
 class SQLAlchemyPaymentRepository:
@@ -220,29 +226,56 @@ class SQLAlchemyRefundRepository:
         return [self._to_domain(model) for model in models]
 
     async def list_unresolved(
-        self, *, statuses: Collection[RefundStatuses], created_before: datetime, limit: int
-    ) -> list[Refund]:
-        """Refunds whose fate is still open, oldest first.
-
-        Age is measured by created_at rather than by the last transition: there
-        is no updated_at column, and the cost of the approximation is only a
-        harmless early status query for a refund that just moved.
-        """
-        # Deliberately without FOR UPDATE: the lock would be held across the
-        # provider HTTP call and block a legitimate callback for that refund.
-        # Safety rests on the CAS in update() — a second reconciler wastes a
-        # call but cannot apply the same transition twice.
+        self,
+        *,
+        statuses: Collection[RefundStatuses],
+        created_before: datetime,
+        due_before: datetime,
+        limit: int,
+    ) -> list[RefundReconciliationCandidate]:
+        """Due open refunds, ordered by their scheduled check, then by id."""
+        due_at = func.coalesce(RefundModel.next_reconcile_at, RefundModel.created_at)
         stmt = (
             select(RefundModel)
             .where(
+                # A literal predicate also lets generic prepared plans use the
+                # partial index, independently of the bound status filter.
+                text("status IN ('CREATED', 'PENDING', 'ERROR')"),
                 RefundModel.status.in_(statuses),
                 RefundModel.created_at < created_before,
+                due_at <= due_before,
             )
-            .order_by(RefundModel.created_at)
+            .order_by(due_at, RefundModel.id)
             .limit(limit)
+            .execution_options(populate_existing=True)
         )
         models = (await self._session.execute(stmt)).scalars().all()
-        return [self._to_domain(model) for model in models]
+        return [
+            RefundReconciliationCandidate(self._to_domain(model), model.reconciliation_attempts)
+            for model in models
+        ]
+
+    async def schedule_reconciliation(
+        self, candidate: RefundReconciliationCandidate, *, next_check_at: datetime
+    ) -> bool:
+        """Claim this attempt and persist its retry before any provider call.
+
+        The caller commits immediately: no lock crosses network I/O. A crashed
+        worker leaves a finite delay, not a permanently claimed refund.
+        """
+        result = await self._session.execute(
+            sql_update(RefundModel)
+            .where(
+                RefundModel.id == candidate.refund.id,
+                RefundModel.status == candidate.refund.status,
+                RefundModel.reconciliation_attempts == candidate.attempts,
+            )
+            .values(
+                next_reconcile_at=next_check_at,
+                reconciliation_attempts=RefundModel.reconciliation_attempts + 1,
+            )
+        )
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
         # A refund transition is an atomic CAS, same as for payments.
@@ -320,8 +353,23 @@ class SQLAlchemyRefundIdempotencyKeyRepository:
         # IntegrityError here, where the use case catches it, not at the final commit.
         await self._session.flush()
 
-    async def set_response(self, key: str, response_body: dict[str, Any]) -> None:
-        model = await self._session.get(RefundIdempotencyKeyModel, key)
-        if model is None:  # the key is reserved before initiation — must not get here
+    async def set_response(self, key: str, response_body: dict[str, Any]) -> dict[str, Any]:
+        # Recovery may race with another API response. The first snapshot must
+        # remain immutable, and every contender must return that same snapshot.
+        await self._session.execute(
+            sql_update(RefundIdempotencyKeyModel)
+            .where(
+                RefundIdempotencyKeyModel.key == key,
+                or_(
+                    RefundIdempotencyKeyModel.response_body.is_(None),
+                    # JSONB serializes Python None as JSON null by default;
+                    # existing keys may use either representation of no response.
+                    RefundIdempotencyKeyModel.response_body == JSON.NULL,
+                ),
+            )
+            .values(response_body=response_body)
+        )
+        record = await self.get(key)
+        if record is None or record.response_body is None:
             raise LookupError(f"Idempotency key {key!r} is not reserved")
-        model.response_body = response_body
+        return record.response_body

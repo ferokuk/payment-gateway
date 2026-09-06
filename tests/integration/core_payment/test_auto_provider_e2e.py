@@ -72,6 +72,7 @@ async def _auto_client(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac, provider
+    await provider.aclose()
     await provider_client.aclose()
     await container.close()
 

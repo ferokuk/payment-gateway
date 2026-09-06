@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -37,7 +38,14 @@ def _setup(
     key_repo = FakeRefundIdempotencyKeyRepository()
     provider = provider or RecordingFakeProvider()
     session = FakeSession(payment_repo._payments, refund_repo._refunds, key_repo._records)
-    use_case = CreateRefundUseCase(payment_repo, refund_repo, key_repo, provider, session)  # type: ignore[arg-type]
+    use_case = CreateRefundUseCase(
+        payment_repo,  # type: ignore[arg-type]
+        refund_repo,  # type: ignore[arg-type]
+        key_repo,  # type: ignore[arg-type]
+        provider,
+        session,  # type: ignore[arg-type]
+        initiation_max_age=timedelta(hours=20),
+    )
     return payment_repo, refund_repo, key_repo, provider, use_case
 
 

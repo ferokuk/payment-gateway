@@ -1,4 +1,4 @@
-"""Background reconciliation of refunds stuck in CREATED.
+"""Background reconciliation of refunds stuck in CREATED, PENDING or ERROR.
 
 A separate process, not a task inside the API: its own event loop, its own
 connection pool, and a crash here cannot take the API down with it. Everything

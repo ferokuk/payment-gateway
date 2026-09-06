@@ -17,6 +17,7 @@ from src.contexts.core_payment.domain.exceptions import (
     PaymentNotFoundError,
     PaymentNotRefundableError,
     RefundAmountExceededError,
+    RefundInitiationExpiredError,
     RefundNotFoundError,
 )
 from src.contexts.core_payment.infrastructure.providers.base import ProviderInitiationError
@@ -40,7 +41,10 @@ router = APIRouter(tags=["refunds"])
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": "Payment not found"},
-        409: {"description": "Payment is not refundable or amount exceeds the remainder"},
+        409: {
+            "description": "Payment is not refundable, amount exceeds the remainder "
+            "or refund initiation window expired"
+        },
         422: {"description": "Validation error or idempotency key reused with different body"},
         502: {
             "description": "Payment provider is unavailable; "
@@ -76,6 +80,8 @@ async def create_refund(
         # malformed request — the same body may become valid later.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except RefundAmountExceededError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except RefundInitiationExpiredError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except IdempotencyKeyMismatchError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)) from e

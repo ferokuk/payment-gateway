@@ -53,18 +53,24 @@ class PaymentProviderProvider(Provider):
             yield client
 
     @provide
-    def get_payment_provider(
+    async def get_payment_provider(
         self, settings: Settings, http_client: httpx.AsyncClient
-    ) -> PaymentProvider:
+    ) -> AsyncIterator[PaymentProvider]:
         if settings.fake_provider_mode == "auto":
-            return AutoCallbackFakePaymentProvider(
+            provider = AutoCallbackFakePaymentProvider(
                 http_client=http_client,
                 callback_url=f"{settings.self_base_url}/callbacks/payments",
                 refund_callback_url=f"{settings.self_base_url}/callbacks/refunds",
                 callback_secret=settings.callback_secret,
                 delay_seconds=settings.fake_callback_delay_seconds,
             )
-        return ManualFakePaymentProvider()
+            try:
+                yield provider
+            finally:
+                # Dishka finalizes this dependency before its HTTP client.
+                await provider.aclose()
+        else:
+            yield ManualFakePaymentProvider()
 
 
 class CorePaymentProvider(Provider):
@@ -104,6 +110,7 @@ class CorePaymentProvider(Provider):
         refund_idempotency_repository: SQLAlchemyRefundIdempotencyKeyRepository,
         payment_provider: PaymentProvider,
         session: AsyncSession,
+        settings: Settings,
     ) -> CreateRefundUseCase:
         return CreateRefundUseCase(
             payment_repository,
@@ -111,6 +118,7 @@ class CorePaymentProvider(Provider):
             refund_idempotency_repository,
             payment_provider,
             session,
+            initiation_max_age=timedelta(seconds=settings.refund_initiation_max_age_seconds),
         )
 
     @provide
@@ -143,8 +151,10 @@ class CorePaymentProvider(Provider):
             payment_provider,
             session,
             stuck_after=timedelta(seconds=settings.reconcile_stuck_after_seconds),
-            give_up_after=timedelta(seconds=settings.reconcile_give_up_after_seconds),
+            initiation_max_age=timedelta(seconds=settings.refund_initiation_max_age_seconds),
             batch_size=settings.reconcile_batch_size,
+            retry_after=timedelta(seconds=settings.reconcile_retry_after_seconds),
+            retry_max=timedelta(seconds=settings.reconcile_retry_max_seconds),
         )
 
     @provide

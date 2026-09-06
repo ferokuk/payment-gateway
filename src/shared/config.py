@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,18 +30,32 @@ class Settings(BaseSettings):
     reconcile_stuck_after_seconds: float = Field(
         default=900.0,
         gt=0,
-        description="Age at which a refund still in created counts as stuck",
+        description="Age at which a CREATED/PENDING/ERROR refund counts as stuck",
     )
-    # 20 hours: safely inside the ~24 hours a PSP keeps an idempotency key.
-    # Past that a repeat is no longer deduplicated and would refund twice.
-    reconcile_give_up_after_seconds: float = Field(
+    # Must be shorter than the actual provider's guaranteed deduplication window.
+    refund_initiation_max_age_seconds: float = Field(
         default=72000.0,
         gt=0,
-        description="Age past which a stuck refund is only reported, never re-initiated",
+        validation_alias=AliasChoices(
+            "refund_initiation_max_age_seconds", "reconcile_give_up_after_seconds"
+        ),
+        description="Maximum refund age for initiation by the API or reconciler",
     )
     reconcile_batch_size: int = Field(
         default=100, gt=0, description="Stuck refunds handled per reconciliation pass"
     )
+    reconcile_retry_after_seconds: float = Field(
+        default=60.0, gt=0, description="Initial delay before checking an unresolved refund again"
+    )
+    reconcile_retry_max_seconds: float = Field(
+        default=3600.0, gt=0, description="Maximum exponential backoff for refund status checks"
+    )
+
+    @model_validator(mode="after")
+    def validate_reconciliation_backoff(self) -> Settings:
+        if self.reconcile_retry_max_seconds < self.reconcile_retry_after_seconds:
+            raise ValueError("reconcile_retry_max_seconds must be >= reconcile_retry_after_seconds")
+        return self
 
 
 settings = Settings()
