@@ -6,6 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from src.contexts.core_payment.infrastructure.database import models  # noqa: F401
+from src.contexts.merchants.infrastructure.database import models as merchant_models  # noqa: F401
 from src.shared.config import settings
 from src.shared.database.database import Base
 

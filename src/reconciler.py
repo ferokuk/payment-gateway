@@ -16,9 +16,9 @@ from dishka import make_async_container
 from src.contexts.core_payment.application.use_cases.reconcile_stuck_refunds import (
     ReconcileStuckRefundsUseCase,
 )
-from src.contexts.core_payment.ioc import CorePaymentProvider, PaymentProviderProvider
+from src.contexts.core_payment.ioc import PaymentProviderProvider, SystemCorePaymentProvider
 from src.shared.config import settings
-from src.shared.ioc import ConfigProvider, DatabaseProvider, RepositoriesProvider
+from src.shared.ioc import ConfigProvider, DatabaseProvider, SystemRepositoriesProvider
 from src.shared.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
@@ -32,8 +32,8 @@ async def main() -> None:
     container = make_async_container(
         ConfigProvider(),
         DatabaseProvider(),
-        RepositoriesProvider(),
-        CorePaymentProvider(),
+        SystemRepositoriesProvider(),
+        SystemCorePaymentProvider(),
         PaymentProviderProvider(),
     )
     stop = asyncio.Event()

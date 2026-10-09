@@ -8,7 +8,10 @@ from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyPaymentRepository,
     SQLAlchemyRefundIdempotencyKeyRepository,
     SQLAlchemyRefundRepository,
+    SystemSQLAlchemyPaymentRepository,
+    SystemSQLAlchemyRefundRepository,
 )
+from src.contexts.merchants.application.public import MerchantIdentity
 from src.shared.config import Settings, settings
 from src.shared.database.engine import create_engine, create_sessionmaker
 
@@ -59,21 +62,39 @@ class RepositoriesProvider(Provider):
     scope = Scope.REQUEST
 
     @provide
-    def get_payment_repository(self, session: AsyncSession) -> SQLAlchemyPaymentRepository:
-        return SQLAlchemyPaymentRepository(session)
+    def get_payment_repository(
+        self, session: AsyncSession, identity: MerchantIdentity
+    ) -> SQLAlchemyPaymentRepository:
+        return SQLAlchemyPaymentRepository(session, identity.merchant_id)
 
     @provide
     def get_idempotency_key_repository(
-        self, session: AsyncSession
+        self, session: AsyncSession, identity: MerchantIdentity
     ) -> SQLAlchemyIdempotencyKeyRepository:
-        return SQLAlchemyIdempotencyKeyRepository(session)
+        return SQLAlchemyIdempotencyKeyRepository(session, identity.merchant_id)
 
     @provide
-    def get_refund_repository(self, session: AsyncSession) -> SQLAlchemyRefundRepository:
-        return SQLAlchemyRefundRepository(session)
+    def get_refund_repository(
+        self, session: AsyncSession, identity: MerchantIdentity
+    ) -> SQLAlchemyRefundRepository:
+        return SQLAlchemyRefundRepository(session, identity.merchant_id)
 
     @provide
     def get_refund_idempotency_key_repository(
-        self, session: AsyncSession
+        self, session: AsyncSession, identity: MerchantIdentity
     ) -> SQLAlchemyRefundIdempotencyKeyRepository:
-        return SQLAlchemyRefundIdempotencyKeyRepository(session)
+        return SQLAlchemyRefundIdempotencyKeyRepository(session, identity.merchant_id)
+
+
+class SystemRepositoriesProvider(Provider):
+    """Explicit authority for authenticated provider callbacks and internal workers."""
+
+    scope = Scope.REQUEST
+
+    @provide
+    def get_payment_repository(self, session: AsyncSession) -> SystemSQLAlchemyPaymentRepository:
+        return SystemSQLAlchemyPaymentRepository(session)
+
+    @provide
+    def get_refund_repository(self, session: AsyncSession) -> SystemSQLAlchemyRefundRepository:
+        return SystemSQLAlchemyRefundRepository(session)

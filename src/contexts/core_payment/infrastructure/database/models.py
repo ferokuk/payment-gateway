@@ -3,7 +3,18 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID as PY_UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -15,6 +26,7 @@ from src.contexts.core_payment.domain.statuses import (
     RefundFailureReasons,
     RefundStatuses,
 )
+from src.contexts.merchants.infrastructure.database.models import MerchantModel
 from src.shared.database.database import Base
 from src.shared.ids import new_uuid
 
@@ -23,6 +35,7 @@ class PaymentModel(Base):
     __tablename__ = "payments"
 
     __table_args__ = (
+        UniqueConstraint("merchant_id", "id", name="uq_payments_merchant_id_id"),
         # The database as the last line of defence against an application bug
         # in the reserve/release statements.
         CheckConstraint(
@@ -32,6 +45,11 @@ class PaymentModel(Base):
     )
 
     id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    merchant_id: Mapped[PY_UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(MerchantModel.id, name="fk_payments_merchant_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
     provider_id: Mapped[int] = mapped_column(nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -55,11 +73,22 @@ class PaymentModel(Base):
 class IdempotencyKeyModel(Base):
     __tablename__ = "idempotency_keys"
 
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["merchant_id", "payment_id"],
+            ["payments.merchant_id", "payments.id"],
+            name="fk_idempotency_keys_merchant_payment",
+        ),
+    )
+
+    merchant_id: Mapped[PY_UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(MerchantModel.id, name="fk_idempotency_keys_merchant_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    payment_id: Mapped[PY_UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("payments.id"), nullable=False
-    )
+    payment_id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     # NULL <=> initiation not confirmed (the payment is stuck in CREATED).
     response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -71,6 +100,13 @@ class RefundModel(Base):
     __tablename__ = "refunds"
 
     __table_args__ = (
+        UniqueConstraint("merchant_id", "id", name="uq_refunds_merchant_id_id"),
+        Index("ix_refunds_merchant_payment_id", "merchant_id", "payment_id"),
+        ForeignKeyConstraint(
+            ["merchant_id", "payment_id"],
+            ["payments.merchant_id", "payments.id"],
+            name="fk_refunds_merchant_payment",
+        ),
         CheckConstraint("reconciliation_attempts >= 0", name="ck_refunds_reconciliation_attempts"),
         Index(
             "ix_refunds_reconciliation_due",
@@ -81,9 +117,12 @@ class RefundModel(Base):
     )
 
     id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    payment_id: Mapped[PY_UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("payments.id"), nullable=False, index=True
+    merchant_id: Mapped[PY_UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(MerchantModel.id, name="fk_refunds_merchant_id", ondelete="RESTRICT"),
+        nullable=False,
     )
+    payment_id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
     status: Mapped[RefundStatuses] = mapped_column(
         SQLEnum(RefundStatuses, name="refund_status"), nullable=False
@@ -105,11 +144,24 @@ class RefundModel(Base):
 class RefundIdempotencyKeyModel(Base):
     __tablename__ = "refund_idempotency_keys"
 
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["merchant_id", "refund_id"],
+            ["refunds.merchant_id", "refunds.id"],
+            name="fk_refund_idempotency_keys_merchant_refund",
+        ),
+    )
+
+    merchant_id: Mapped[PY_UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            MerchantModel.id, name="fk_refund_idempotency_keys_merchant_id", ondelete="RESTRICT"
+        ),
+        primary_key=True,
+    )
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    refund_id: Mapped[PY_UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("refunds.id"), nullable=False
-    )
+    refund_id: Mapped[PY_UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     # Missing HTTP snapshot: reconciliation may already have advanced the refund.
     response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

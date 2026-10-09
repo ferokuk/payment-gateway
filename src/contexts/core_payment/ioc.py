@@ -30,6 +30,8 @@ from src.contexts.core_payment.infrastructure.database.repositories import (
     SQLAlchemyPaymentRepository,
     SQLAlchemyRefundIdempotencyKeyRepository,
     SQLAlchemyRefundRepository,
+    SystemSQLAlchemyPaymentRepository,
+    SystemSQLAlchemyRefundRepository,
 )
 from src.contexts.core_payment.infrastructure.providers.base import PaymentProvider
 from src.contexts.core_payment.infrastructure.providers.fake_auto import (
@@ -96,13 +98,6 @@ class CorePaymentProvider(Provider):
         return GetPaymentStatusUseCase(payment_repository)
 
     @provide
-    def get_process_provider_callback_use_case(
-        self,
-        payment_repository: SQLAlchemyPaymentRepository,
-    ) -> ProcessProviderCallbackUseCase:
-        return ProcessProviderCallbackUseCase(payment_repository)
-
-    @provide
     def get_create_refund_use_case(
         self,
         payment_repository: SQLAlchemyPaymentRepository,
@@ -136,11 +131,24 @@ class CorePaymentProvider(Provider):
     ) -> GetRefundStatusUseCase:
         return GetRefundStatusUseCase(refund_repository)
 
+
+class SystemCorePaymentProvider(Provider):
+    """Service-only workflows; never supplies merchant-facing use cases."""
+
+    scope = Scope.REQUEST
+
+    @provide
+    def get_process_provider_callback_use_case(
+        self,
+        payment_repository: SystemSQLAlchemyPaymentRepository,
+    ) -> ProcessProviderCallbackUseCase:
+        return ProcessProviderCallbackUseCase(payment_repository)
+
     @provide
     def get_reconcile_stuck_refunds_use_case(
         self,
-        refund_repository: SQLAlchemyRefundRepository,
-        payment_repository: SQLAlchemyPaymentRepository,
+        refund_repository: SystemSQLAlchemyRefundRepository,
+        payment_repository: SystemSQLAlchemyPaymentRepository,
         payment_provider: PaymentProvider,
         session: AsyncSession,
         settings: Settings,
@@ -160,7 +168,7 @@ class CorePaymentProvider(Provider):
     @provide
     def get_process_refund_callback_use_case(
         self,
-        refund_repository: SQLAlchemyRefundRepository,
-        payment_repository: SQLAlchemyPaymentRepository,
+        refund_repository: SystemSQLAlchemyRefundRepository,
+        payment_repository: SystemSQLAlchemyPaymentRepository,
     ) -> ProcessRefundCallbackUseCase:
         return ProcessRefundCallbackUseCase(refund_repository, payment_repository)

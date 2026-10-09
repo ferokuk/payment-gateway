@@ -13,12 +13,14 @@ from src.contexts.core_payment.domain.refund import (
 )
 from src.contexts.core_payment.domain.statuses import RefundFailureReasons, RefundStatuses
 from src.shared.ids import new_uuid
+from tests.fixtures.merchants import MERCHANT_ID
 from tests.fixtures.refund import make_refund
 
 
 def test_refund_is_created_with_given_fields() -> None:
     payment_id = new_uuid()
     refund = Refund(
+        merchant_id=MERCHANT_ID,
         id=new_uuid(),
         payment_id=payment_id,
         amount=Decimal("40.00"),

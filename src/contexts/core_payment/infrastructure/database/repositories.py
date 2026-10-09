@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import JSON, CursorResult, func, or_, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.contexts.core_payment.domain.exceptions import (
     PaymentNotFoundError,
@@ -30,6 +32,7 @@ from src.contexts.core_payment.infrastructure.database.models import (
 
 @dataclass(frozen=True)
 class IdempotencyRecord:
+    merchant_id: UUID
     key: str
     request_hash: str
     payment_id: UUID
@@ -38,6 +41,7 @@ class IdempotencyRecord:
 
 @dataclass(frozen=True)
 class RefundIdempotencyRecord:
+    merchant_id: UUID
     key: str
     request_hash: str
     refund_id: UUID
@@ -50,26 +54,69 @@ class RefundReconciliationCandidate:
     attempts: int
 
 
-class SQLAlchemyPaymentRepository:
-    def __init__(self, session: AsyncSession):
+class _MerchantScope:
+    def __init__(self, session: AsyncSession, merchant_id: UUID) -> None:
+        if not isinstance(merchant_id, UUID):
+            raise ValueError("A merchant UUID is required")
+        self._session = session
+        self._merchant_id = merchant_id
+
+    @property
+    def merchant_id(self) -> UUID:
+        return self._merchant_id
+
+    def _scope(self, column: InstrumentedAttribute[UUID]) -> tuple[ColumnElement[bool], ...]:
+        return (column == self._merchant_id,)
+
+    def _validate_owner(self, merchant_id: UUID) -> None:
+        if merchant_id != self._merchant_id:
+            raise ValueError("Object does not belong to this merchant scope")
+
+
+class _SystemScope(_MerchantScope):
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def merchant_id(self) -> UUID:
+        # System authority must never become a default owner for client writes.
+        raise RuntimeError("A system repository has no merchant scope")
+
+    def _scope(self, column: InstrumentedAttribute[UUID]) -> tuple[ColumnElement[bool], ...]:
+        return ()
+
+    def _validate_owner(self, merchant_id: UUID) -> None:
+        pass
+
+
+class SQLAlchemyPaymentRepository(_MerchantScope):
     async def add(self, payment: Payment) -> None:
+        self._validate_owner(payment.merchant_id)
         model = self._to_model(payment)
         self._session.add(model)
 
     async def get_by_id(self, payment_id: UUID) -> Payment | None:
         # populate_existing: a re-read after a CAS conflict must issue a fresh
         # SELECT rather than return the object from the identity map.
-        model = await self._session.get(PaymentModel, payment_id, populate_existing=True)
+        model = await self._session.scalar(
+            select(PaymentModel)
+            .where(PaymentModel.id == payment_id, *self._scope(PaymentModel.merchant_id))
+            .execution_options(populate_existing=True)
+        )
         return self._to_domain(model) if model else None
 
     async def update(self, payment: Payment, *, expected_status: PaymentStatuses) -> None:
+        self._validate_owner(payment.merchant_id)
         # A payment transition is an atomic CAS: the guard on the from-status
         # protects against overwriting state that has moved ahead.
         stmt = (
             sql_update(PaymentModel)
-            .where(PaymentModel.id == payment.id, PaymentModel.status == expected_status)
+            .where(
+                PaymentModel.id == payment.id,
+                PaymentModel.merchant_id == payment.merchant_id,
+                *self._scope(PaymentModel.merchant_id),
+                PaymentModel.status == expected_status,
+            )
             .values(
                 status=payment.status,
                 failure_reason=payment.failure_reason,
@@ -83,8 +130,8 @@ class SQLAlchemyPaymentRepository:
         cursor_result = cast("CursorResult[Any]", result)
         if cursor_result.rowcount == 0:
             # Distinguish "payment does not exist" from "a competitor got there first".
-            model = await self._session.get(PaymentModel, payment.id, populate_existing=True)
-            if model is None:
+            current = await self.get_by_id(payment.id)
+            if current is None or current.merchant_id != payment.merchant_id:
                 raise PaymentNotFoundError
             raise StalePaymentStateError(payment.id, expected_status)
 
@@ -95,6 +142,7 @@ class SQLAlchemyPaymentRepository:
             sql_update(PaymentModel)
             .where(
                 PaymentModel.id == payment_id,
+                *self._scope(PaymentModel.merchant_id),
                 PaymentModel.status == PaymentStatuses.SUCCESS,
                 PaymentModel.refunded_amount + amount <= PaymentModel.amount,
             )
@@ -104,7 +152,7 @@ class SQLAlchemyPaymentRepository:
         cursor_result = cast("CursorResult[Any]", result)
         if cursor_result.rowcount == 0:
             # Distinguish missing payment / wrong status / exhausted remainder.
-            model = await self._session.get(PaymentModel, payment_id, populate_existing=True)
+            model = await self.get_by_id(payment_id)
             if model is None:
                 raise PaymentNotFoundError
             if model.status is not PaymentStatuses.SUCCESS:
@@ -118,6 +166,7 @@ class SQLAlchemyPaymentRepository:
             sql_update(PaymentModel)
             .where(
                 PaymentModel.id == payment_id,
+                *self._scope(PaymentModel.merchant_id),
                 PaymentModel.refunded_amount - amount >= 0,
             )
             .values(refunded_amount=PaymentModel.refunded_amount - amount)
@@ -125,7 +174,7 @@ class SQLAlchemyPaymentRepository:
         result = await self._session.execute(stmt)
         cursor_result = cast("CursorResult[Any]", result)
         if cursor_result.rowcount == 0:
-            model = await self._session.get(PaymentModel, payment_id, populate_existing=True)
+            model = await self.get_by_id(payment_id)
             if model is None:
                 raise PaymentNotFoundError
             raise LookupError(
@@ -136,6 +185,7 @@ class SQLAlchemyPaymentRepository:
     def _to_model(payment: Payment) -> PaymentModel:
         return PaymentModel(
             id=payment.id,
+            merchant_id=payment.merchant_id,
             provider_id=payment.provider_id,
             amount=payment.amount,
             currency=payment.currency,
@@ -151,6 +201,7 @@ class SQLAlchemyPaymentRepository:
     def _to_domain(payment: PaymentModel) -> Payment:
         return Payment(
             id=payment.id,
+            merchant_id=payment.merchant_id,
             provider_id=payment.provider_id,
             amount=payment.amount,
             currency=payment.currency,
@@ -163,17 +214,23 @@ class SQLAlchemyPaymentRepository:
         )
 
 
-class SQLAlchemyIdempotencyKeyRepository:
-    def __init__(self, session: AsyncSession):
-        self._session = session
+class SystemSQLAlchemyPaymentRepository(_SystemScope, SQLAlchemyPaymentRepository):
+    """Service-only access for authenticated callbacks and reconciliation."""
 
+
+class SQLAlchemyIdempotencyKeyRepository(_MerchantScope):
     async def get(self, key: str) -> IdempotencyRecord | None:
         # populate_existing: re-reading the key needs a fresh SELECT rather
         # than an object cached in the identity map (the resume algorithm).
-        model = await self._session.get(IdempotencyKeyModel, key, populate_existing=True)
+        model = await self._session.scalar(
+            select(IdempotencyKeyModel)
+            .where(IdempotencyKeyModel.key == key, *self._scope(IdempotencyKeyModel.merchant_id))
+            .execution_options(populate_existing=True)
+        )
         if model is None:
             return None
         return IdempotencyRecord(
+            merchant_id=model.merchant_id,
             key=model.key,
             request_hash=model.request_hash,
             payment_id=model.payment_id,
@@ -181,8 +238,10 @@ class SQLAlchemyIdempotencyKeyRepository:
         )
 
     async def add(self, record: IdempotencyRecord) -> None:
+        self._validate_owner(record.merchant_id)
         self._session.add(
             IdempotencyKeyModel(
+                merchant_id=record.merchant_id,
                 key=record.key,
                 request_hash=record.request_hash,
                 payment_id=record.payment_id,
@@ -194,23 +253,28 @@ class SQLAlchemyIdempotencyKeyRepository:
         await self._session.flush()
 
     async def set_response(self, key: str, response_body: dict[str, Any]) -> None:
-        model = await self._session.get(IdempotencyKeyModel, key)
-        if model is None:  # the key is reserved before initiation — must not get here
+        result = await self._session.execute(
+            sql_update(IdempotencyKeyModel)
+            .where(IdempotencyKeyModel.key == key, *self._scope(IdempotencyKeyModel.merchant_id))
+            .values(response_body=response_body)
+        )
+        if cast("CursorResult[Any]", result).rowcount == 0:
             raise LookupError(f"Idempotency key {key!r} is not reserved")
-        model.response_body = response_body
 
 
-class SQLAlchemyRefundRepository:
-    def __init__(self, session: AsyncSession):
-        self._session = session
-
+class SQLAlchemyRefundRepository(_MerchantScope):
     async def add(self, refund: Refund) -> None:
+        self._validate_owner(refund.merchant_id)
         self._session.add(self._to_model(refund))
 
     async def get_by_id(self, refund_id: UUID) -> Refund | None:
         # populate_existing: a re-read after a CAS conflict must issue a fresh
         # SELECT rather than return the object from the identity map.
-        model = await self._session.get(RefundModel, refund_id, populate_existing=True)
+        model = await self._session.scalar(
+            select(RefundModel)
+            .where(RefundModel.id == refund_id, *self._scope(RefundModel.merchant_id))
+            .execution_options(populate_existing=True)
+        )
         return self._to_domain(model) if model else None
 
     async def list_by_payment_id(self, payment_id: UUID) -> list[Refund]:
@@ -219,7 +283,7 @@ class SQLAlchemyRefundRepository:
         # (uuid7 is time-ordered, so the tiebreaker follows the same axis).
         stmt = (
             select(RefundModel)
-            .where(RefundModel.payment_id == payment_id)
+            .where(RefundModel.payment_id == payment_id, *self._scope(RefundModel.merchant_id))
             .order_by(RefundModel.created_at, RefundModel.id)
         )
         models = (await self._session.execute(stmt)).scalars().all()
@@ -238,6 +302,7 @@ class SQLAlchemyRefundRepository:
         stmt = (
             select(RefundModel)
             .where(
+                *self._scope(RefundModel.merchant_id),
                 # A literal predicate also lets generic prepared plans use the
                 # partial index, independently of the bound status filter.
                 text("status IN ('CREATED', 'PENDING', 'ERROR')"),
@@ -263,10 +328,13 @@ class SQLAlchemyRefundRepository:
         The caller commits immediately: no lock crosses network I/O. A crashed
         worker leaves a finite delay, not a permanently claimed refund.
         """
+        self._validate_owner(candidate.refund.merchant_id)
         result = await self._session.execute(
             sql_update(RefundModel)
             .where(
                 RefundModel.id == candidate.refund.id,
+                RefundModel.merchant_id == candidate.refund.merchant_id,
+                *self._scope(RefundModel.merchant_id),
                 RefundModel.status == candidate.refund.status,
                 RefundModel.reconciliation_attempts == candidate.attempts,
             )
@@ -278,10 +346,16 @@ class SQLAlchemyRefundRepository:
         return cast("CursorResult[Any]", result).rowcount == 1
 
     async def update(self, refund: Refund, *, expected_status: RefundStatuses) -> None:
+        self._validate_owner(refund.merchant_id)
         # A refund transition is an atomic CAS, same as for payments.
         stmt = (
             sql_update(RefundModel)
-            .where(RefundModel.id == refund.id, RefundModel.status == expected_status)
+            .where(
+                RefundModel.id == refund.id,
+                RefundModel.merchant_id == refund.merchant_id,
+                *self._scope(RefundModel.merchant_id),
+                RefundModel.status == expected_status,
+            )
             .values(
                 status=refund.status,
                 failure_reason=refund.failure_reason,
@@ -291,8 +365,8 @@ class SQLAlchemyRefundRepository:
         result = await self._session.execute(stmt)
         cursor_result = cast("CursorResult[Any]", result)
         if cursor_result.rowcount == 0:
-            model = await self._session.get(RefundModel, refund.id, populate_existing=True)
-            if model is None:
+            current = await self.get_by_id(refund.id)
+            if current is None or current.merchant_id != refund.merchant_id:
                 raise RefundNotFoundError
             raise StaleRefundStateError(refund.id, expected_status)
 
@@ -300,6 +374,7 @@ class SQLAlchemyRefundRepository:
     def _to_model(refund: Refund) -> RefundModel:
         return RefundModel(
             id=refund.id,
+            merchant_id=refund.merchant_id,
             payment_id=refund.payment_id,
             amount=refund.amount,
             status=refund.status,
@@ -313,6 +388,7 @@ class SQLAlchemyRefundRepository:
     def _to_domain(refund: RefundModel) -> Refund:
         return Refund(
             id=refund.id,
+            merchant_id=refund.merchant_id,
             payment_id=refund.payment_id,
             amount=refund.amount,
             status=refund.status,
@@ -323,17 +399,26 @@ class SQLAlchemyRefundRepository:
         )
 
 
-class SQLAlchemyRefundIdempotencyKeyRepository:
-    def __init__(self, session: AsyncSession):
-        self._session = session
+class SystemSQLAlchemyRefundRepository(_SystemScope, SQLAlchemyRefundRepository):
+    """Service-only access for authenticated callbacks and reconciliation."""
 
+
+class SQLAlchemyRefundIdempotencyKeyRepository(_MerchantScope):
     async def get(self, key: str) -> RefundIdempotencyRecord | None:
         # populate_existing: the resume algorithm re-reads the key and needs a
         # fresh SELECT, not the identity-map cache.
-        model = await self._session.get(RefundIdempotencyKeyModel, key, populate_existing=True)
+        model = await self._session.scalar(
+            select(RefundIdempotencyKeyModel)
+            .where(
+                RefundIdempotencyKeyModel.key == key,
+                *self._scope(RefundIdempotencyKeyModel.merchant_id),
+            )
+            .execution_options(populate_existing=True)
+        )
         if model is None:
             return None
         return RefundIdempotencyRecord(
+            merchant_id=model.merchant_id,
             key=model.key,
             request_hash=model.request_hash,
             refund_id=model.refund_id,
@@ -341,8 +426,10 @@ class SQLAlchemyRefundIdempotencyKeyRepository:
         )
 
     async def add(self, record: RefundIdempotencyRecord) -> None:
+        self._validate_owner(record.merchant_id)
         self._session.add(
             RefundIdempotencyKeyModel(
+                merchant_id=record.merchant_id,
                 key=record.key,
                 request_hash=record.request_hash,
                 refund_id=record.refund_id,
@@ -360,6 +447,7 @@ class SQLAlchemyRefundIdempotencyKeyRepository:
             sql_update(RefundIdempotencyKeyModel)
             .where(
                 RefundIdempotencyKeyModel.key == key,
+                *self._scope(RefundIdempotencyKeyModel.merchant_id),
                 or_(
                     RefundIdempotencyKeyModel.response_body.is_(None),
                     # JSONB serializes Python None as JSON null by default;

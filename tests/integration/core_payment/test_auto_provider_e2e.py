@@ -18,16 +18,16 @@ from httpx import ASGITransport, AsyncClient
 from src.contexts.core_payment.infrastructure.providers.fake_auto import (
     AutoCallbackFakePaymentProvider,
 )
-from src.contexts.core_payment.ioc import CorePaymentProvider
+from src.contexts.core_payment.ioc import CorePaymentProvider, SystemCorePaymentProvider
 from src.contexts.core_payment.presentation.routers.callbacks import (
     router as callbacks_router,
 )
 from src.contexts.core_payment.presentation.routers.payment import router as payment_router
 from src.contexts.core_payment.presentation.routers.refund import router as refund_router
-from src.shared.security import AuthProvider
 from tests.fixtures.client import (
     API_KEY,
     CALLBACK_SECRET,
+    FakeAuthProvider,
     FakeConfigProvider,
     FakePaymentProviderProvider,
     FakeRepositoriesProvider,
@@ -61,11 +61,12 @@ async def _auto_client(
     )
     container = make_async_container(
         FakeConfigProvider(),
-        AuthProvider(),
+        FakeAuthProvider(),
         FakeRepositoriesProvider(fake_repo, fake_key_repo, fake_refund_repo, fake_refund_key_repo),
         FakeSessionProvider(fake_session),
         FakePaymentProviderProvider(provider),
         CorePaymentProvider(),
+        SystemCorePaymentProvider(),
         FastapiProvider(),
     )
     setup_dishka(container, app)

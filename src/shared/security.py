@@ -1,13 +1,15 @@
 import secrets
+from collections.abc import AsyncIterator
 
 from dishka import Provider, Scope, provide
 from fastapi import HTTPException, Request, status
+from httpx import AsyncClient
 
+from src.contexts.merchants.application.public import MerchantIdentity
 from src.shared.config import Settings
+from src.shared.merchant_client import HTTPMerchantAuthenticator, MerchantServiceUnavailable
 
-
-class Authenticated:
-    """Marker of successful merchant authentication via API key."""
+Authenticated = MerchantIdentity
 
 
 class CallbackAuthenticated:
@@ -17,19 +19,33 @@ class CallbackAuthenticated:
 class AuthProvider(Provider):
     scope = Scope.REQUEST
 
+    @provide(scope=Scope.APP)
+    async def merchant_authenticator(
+        self, settings: Settings
+    ) -> AsyncIterator[HTTPMerchantAuthenticator]:
+        async with AsyncClient(
+            base_url=settings.merchant_service_url, timeout=5.0, follow_redirects=False
+        ) as client:
+            yield HTTPMerchantAuthenticator(client, settings.merchant_service_secret)
+
     @provide
-    def authenticate(self, request: Request, settings: Settings) -> Authenticated:
+    async def authenticate(
+        self, request: Request, authenticator: HTTPMerchantAuthenticator
+    ) -> MerchantIdentity:
         api_key = request.headers.get("X-API-Key")
-        # encode: compare_digest on str raises TypeError for a non-ASCII header
-        # value — that must be a 401, not a 500.
-        if api_key is None or not secrets.compare_digest(
-            api_key.encode("utf-8"), settings.api_key.encode("utf-8")
-        ):
+        try:
+            identity = await authenticator(api_key)
+        except MerchantServiceUnavailable:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Merchant authentication is unavailable",
+            ) from None
+        if identity is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or missing API key",
             )
-        return Authenticated()
+        return identity
 
     @provide
     def authenticate_callback(self, request: Request, settings: Settings) -> CallbackAuthenticated:

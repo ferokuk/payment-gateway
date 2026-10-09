@@ -8,14 +8,23 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.contexts.core_payment.ioc import CorePaymentProvider, PaymentProviderProvider
+from src.contexts.core_payment.ioc import (
+    CorePaymentProvider,
+    PaymentProviderProvider,
+    SystemCorePaymentProvider,
+)
 from src.contexts.core_payment.presentation.routers.callbacks import (
     router as callbacks_router,
 )
 from src.contexts.core_payment.presentation.routers.payment import router as payment_router
 from src.contexts.core_payment.presentation.routers.refund import router as refund_router
 from src.shared.config import settings
-from src.shared.ioc import ConfigProvider, DatabaseProvider, RepositoriesProvider
+from src.shared.ioc import (
+    ConfigProvider,
+    DatabaseProvider,
+    RepositoriesProvider,
+    SystemRepositoriesProvider,
+)
 from src.shared.logging import configure_logging
 from src.shared.security import AuthProvider
 
@@ -38,10 +47,12 @@ container = make_async_container(
     ConfigProvider(),
     DatabaseProvider(),
     CorePaymentProvider(),
+    SystemCorePaymentProvider(),
     PaymentProviderProvider(),
     AuthProvider(),
     FastapiProvider(),
     RepositoriesProvider(),
+    SystemRepositoriesProvider(),
 )
 setup_dishka(container, app)
 

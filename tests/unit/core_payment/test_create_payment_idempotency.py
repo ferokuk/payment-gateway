@@ -1,5 +1,6 @@
 from dataclasses import replace
 from decimal import Decimal
+from uuid import UUID
 
 import anyio
 import pytest
@@ -15,6 +16,7 @@ from src.contexts.core_payment.domain.payment import Payment
 from src.contexts.core_payment.domain.statuses import PaymentStatuses
 from src.contexts.core_payment.infrastructure.database.repositories import IdempotencyRecord
 from tests.fixtures.idempotency import FakeIdempotencyKeyRepository
+from tests.fixtures.merchants import MERCHANT_ID
 from tests.fixtures.payment import FakePaymentRepository, make_payment
 from tests.fixtures.providers import RecordingFakeProvider
 from tests.fixtures.session import FakeSession
@@ -133,7 +135,7 @@ async def test_recovery_when_payment_already_pending_rereads_key_and_replays() -
     class _StaleFirstReadKeyRepo(FakeIdempotencyKeyRepository):
         """First get returns the record without response — a snapshot before the rival commit."""
 
-        def __init__(self, records: dict[str, IdempotencyRecord]) -> None:
+        def __init__(self, records: dict[tuple[UUID, str], IdempotencyRecord]) -> None:
             super().__init__()
             self._records = records
             self._stale = True
@@ -167,7 +169,7 @@ async def test_lost_insert_race_falls_back_to_replay() -> None:
     class _BlindKeyRepo(FakeIdempotencyKeyRepository):
         """First get does not "see" the rival row — like a SELECT before the rival commit."""
 
-        def __init__(self, records: dict[str, IdempotencyRecord]) -> None:
+        def __init__(self, records: dict[tuple[UUID, str], IdempotencyRecord]) -> None:
             super().__init__()
             self._records = records
             self._blind = True
@@ -247,6 +249,7 @@ async def test_stale_recovery_returns_winner_replay_without_stomp() -> None:
     await repo.add(stuck)
     await key_repo.add(
         IdempotencyRecord(
+            merchant_id=MERCHANT_ID,
             key=KEY,
             request_hash=_request_hash(_make_command()),
             payment_id=stuck.id,
@@ -278,7 +281,9 @@ async def test_stale_conflict_without_key_is_reraised() -> None:
     # The winner in _RacedPaymentRepo will try set_response on a nonexistent
     # key — for the no-key scenario reserve it manually up front.
     await key_repo.add(
-        IdempotencyRecord(key=KEY, request_hash="0" * 64, payment_id=make_payment().id)
+        IdempotencyRecord(
+            merchant_id=MERCHANT_ID, key=KEY, request_hash="0" * 64, payment_id=make_payment().id
+        )
     )
 
     with pytest.raises(StalePaymentStateError):
